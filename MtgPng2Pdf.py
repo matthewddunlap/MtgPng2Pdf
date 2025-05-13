@@ -4,7 +4,7 @@ import os
 import glob
 import argparse
 import unicodedata 
-import datetime   
+import re 
 from typing import List, Tuple, Dict, Optional
 
 from PIL import Image 
@@ -24,43 +24,69 @@ PAPER_SIZES_PT: Dict[str, Tuple[float, float]] = {
 }
 
 def normalize_card_name(name: str) -> str:
+    """
+    Aggressively normalizes a card name for matching:
+    - Converts to lowercase.
+    - Removes accents and common diacritics.
+    - Removes ALL common punctuation (apostrophes, commas, hyphens, underscores etc.).
+    - Removes ALL spaces.
+    - Strips leading/trailing whitespace (mostly for safety, space removal is key).
+    """
     name = name.lower().strip()
     normalized_name = unicodedata.normalize('NFKD', name).encode('ascii', 'ignore').decode('ascii')
-    return normalized_name
+    normalized_name = re.sub(r"[',\-\.:()\[\]\s_]", "", normalized_name) 
+    normalized_name = re.sub(r"[^a-z0-9]", "", normalized_name)
+    return normalized_name.strip() 
 
 def find_image_in_map(
     deck_card_name_original: str, 
-    normalized_file_map: Dict[str, str]
+    normalized_file_map: Dict[str, str] 
 ) -> Optional[str]:
-    variations_to_try = [
-        deck_card_name_original,
-        deck_card_name_original.replace(" ", "-"),
-        deck_card_name_original.replace(" ", "_")
-    ]
-    for variation in variations_to_try:
-        normalized_variation = normalize_card_name(variation)
-        if normalized_variation in normalized_file_map:
-            return normalized_file_map[normalized_variation]
+    """
+    Tries to find the card in the pre-built map of normalized filenames.
+    Relies on the aggressive normalize_card_name function.
+    """
+    normalized_deck_card_name = normalize_card_name(deck_card_name_original)
+    
+    if normalized_deck_card_name in normalized_file_map:
+        return normalized_file_map[normalized_deck_card_name]
+            
     return None
 
 def process_deck_list(
     deck_list_path: str, 
-    png_dir: str # Changed from input_dir
+    png_dir: str,
+    debug: bool = False # Added debug flag
 ) -> Tuple[List[str], List[str]]:
     images_to_print: List[str] = []
     missing_card_names: List[str] = []
     
     normalized_file_map: Dict[str, str] = {}
-    print(f"Scanning PNG directory '{png_dir}' for PNGs...")
+    if debug:
+        print(f"DEBUG: Scanning PNG directory '{png_dir}' for PNGs...")
+        print("DEBUG: --- Building Normalized Filename Map (Filename Basename -> Normalized Key) ---")
+    else:
+        print(f"Scanning PNG directory '{png_dir}' for PNGs...")
+
+
     for ext in ("*.png", "*.PNG"):
-        for filepath in glob.glob(os.path.join(png_dir, ext)): # Use png_dir
+        for filepath in glob.glob(os.path.join(png_dir, ext)): 
             basename_no_ext = os.path.splitext(os.path.basename(filepath))[0]
-            normalized_basename = normalize_card_name(basename_no_ext)
-            if normalized_basename not in normalized_file_map:
-                normalized_file_map[normalized_basename] = filepath
+            normalized_filename_key = normalize_card_name(basename_no_ext) 
+            
+            if debug:
+                print(f"DEBUG:   File: '{basename_no_ext}'  => Normalized Key: '{normalized_filename_key}' (Path: {filepath})")
+
+            if normalized_filename_key not in normalized_file_map:
+                normalized_file_map[normalized_filename_key] = filepath
+            elif debug: # Only print warning in debug mode to avoid clutter
+                print(f"DEBUG:     WARNING: Normalized key '{normalized_filename_key}' from '{os.path.basename(filepath)}' conflicts with existing entry for '{os.path.basename(normalized_file_map[normalized_filename_key])}'. Using first one found.")
+    
+    if debug:
+        print("DEBUG: --- Finished Building Map ---")
             
     if not normalized_file_map:
-        print(f"  No PNG files found in '{png_dir}'. Cannot process deck list.")
+        print(f"  No PNG files found in '{png_dir}' or map is empty. Cannot process deck list.")
         try:
             with open(deck_list_path, 'r', encoding='utf-8') as f:
                 for line in f:
@@ -73,7 +99,11 @@ def process_deck_list(
             print(f"Error: Deck list file not found: {deck_list_path}")
             return [], []
 
-    print(f"Processing deck list: {deck_list_path}")
+    if debug:
+        print(f"DEBUG: Processing deck list: {deck_list_path}")
+    else:
+        print(f"Processing deck list: {deck_list_path}")
+
     try:
         with open(deck_list_path, 'r', encoding='utf-8') as f:
             for line_num, line in enumerate(f, 1):
@@ -82,29 +112,46 @@ def process_deck_list(
                 parts = line.split(maxsplit=1)
                 if len(parts) != 2:
                     print(f"  Warning: Skipping malformed line {line_num}: '{line}'")
-                    missing_card_names.append(line)
+                    missing_card_names.append(line) 
                     continue
                 count_str, deck_card_name_original = parts
                 try:
                     count = int(count_str)
-                    if count <= 0: print(f"  Warning: Non-positive count line {line_num}: '{line}'"); continue
+                    if count <= 0: 
+                        print(f"  Warning: Skipping line {line_num} with non-positive count: '{line}'")
+                        continue
                 except ValueError:
-                    print(f"  Warning: Invalid count line {line_num}: '{line}'")
-                    missing_card_names.append(deck_card_name_original)
+                    print(f"  Warning: Skipping malformed line {line_num} in deck list (invalid count): '{line}'")
+                    missing_card_names.append(deck_card_name_original) 
                     continue
-                found_path = find_image_in_map(deck_card_name_original, normalized_file_map)
+                
+                if debug:
+                    normalized_deck_list_entry = normalize_card_name(deck_card_name_original)
+                    print(f"DEBUG: \n  Attempting to find: '{deck_card_name_original}' (Normalized attempt: '{normalized_deck_list_entry}')")
+
+                found_path = find_image_in_map(deck_card_name_original, normalized_file_map) 
+                
                 if found_path:
                     images_to_print.extend([found_path] * count)
-                    print(f"  Found {count}x '{deck_card_name_original}' as '{os.path.basename(found_path)}'")
+                    if debug: # Only print "Found" in debug mode
+                        print(f"DEBUG:     FOUND: {count}x '{deck_card_name_original}' as '{os.path.basename(found_path)}'")
                 else:
-                    print(f"  NOT FOUND: {count}x '{deck_card_name_original}'")
+                    # "NOT FOUND" is important user feedback, always print
+                    print(f"  NOT FOUND: {count}x '{deck_card_name_original}'") 
+                    if debug:
+                        if not normalized_file_map:
+                            print("DEBUG:       Normalized file map is empty.")
+                        else:
+                            print("DEBUG:       Available normalized keys in map:")
+                            for key_in_map in sorted(normalized_file_map.keys()): 
+                                print(f"DEBUG:         - '{key_in_map}' (Points to: {os.path.basename(normalized_file_map[key_in_map])})")
                     missing_card_names.append(deck_card_name_original)
     except FileNotFoundError:
         print(f"Error: Deck list file not found: {deck_list_path}")
         return [], []
     return images_to_print, list(set(missing_card_names))
 
-def write_missing_cards_file(deck_list_path: str, missing_cards: List[str]): # Changed signature
+def write_missing_cards_file(deck_list_path: str, missing_cards: List[str]):
     if not missing_cards:
         return
     
@@ -115,7 +162,7 @@ def write_missing_cards_file(deck_list_path: str, missing_cards: List[str]): # C
     missing_filepath = os.path.join(deck_list_dir, missing_filename) if deck_list_dir else missing_filename
 
     try:
-        if deck_list_dir and not os.path.exists(deck_list_dir): # Should not happen if deck_list_path is valid
+        if deck_list_dir and not os.path.exists(deck_list_dir):
             os.makedirs(deck_list_dir, exist_ok=True)
             
         with open(missing_filepath, 'w', encoding='utf-8') as f:
@@ -126,7 +173,6 @@ def write_missing_cards_file(deck_list_path: str, missing_cards: List[str]): # C
         print(f"Error writing missing cards file '{missing_filepath}': {e}")
 
 def parse_dimension(dim_str: str, default_unit_is_mm: bool = False) -> float:
-    # ... (no changes)
     dim_str = dim_str.lower().strip()
     val_str = ""
     unit_str = ""
@@ -143,14 +189,12 @@ def parse_dimension(dim_str: str, default_unit_is_mm: bool = False) -> float:
     else: raise ValueError(f"Unknown unit '{unit_str}' in '{dim_str}'. Use in, mm, pt.")
 
 def parse_paper_type(size_str: str) -> str:
-    # ... (no changes)
     size_str = size_str.lower().strip()
     if size_str not in PAPER_SIZES_PT:
         raise ValueError(f"Invalid paper type: '{size_str}'. Supported: {', '.join(PAPER_SIZES_PT.keys())}.")
     return size_str
 
 def parse_color(color_str: str) -> colors.Color:
-    # ... (no changes)
     color_str_lower = color_str.lower()
     if hasattr(colors, color_str_lower): return getattr(colors, color_str_lower)
     elif color_str.startswith('#') and (len(color_str) == 7 or len(color_str) == 9):
@@ -161,7 +205,7 @@ def parse_color(color_str: str) -> colors.Color:
 
 def create_pdf_grid(
     image_files: List[str],
-    output_pdf_file: str, # Changed from output_filename
+    output_pdf_file: str, 
     paper_type_str: str = "letter",
     image_spacing_pixels: int = 0,
     dpi: int = 300,
@@ -173,7 +217,6 @@ def create_pdf_grid(
     cut_line_color_str: str = "gray",
     cut_line_width_pt: float = 0.25,
 ):
-    # ... (rest of the function is largely the same, uses output_pdf_file)
     if not image_files:
         print("No image files to process for PDF. PDF will not be generated.")
         return
@@ -214,9 +257,8 @@ def create_pdf_grid(
     grid_content_width_pt = (grid_cols * target_img_width_pt) + ((grid_cols - 1) * image_spacing_pt)
     grid_content_height_pt = (grid_rows * target_img_height_pt) + ((grid_rows - 1) * image_spacing_pt)
 
-    print(f"Output PDF: {output_pdf_file}") # Changed here
+    print(f"Output PDF: {output_pdf_file}") 
     print(f"Paper dimensions: {paper_width_pt/inch:.2f}in x {paper_height_pt/inch:.2f}in (Portrait)")
-    # ... (rest of print statements are the same)
     print(f"Page margins: {page_margin_str} ({page_margin_pt:.2f}pt)")
     print(f"Image spacing: {image_spacing_pixels}px @ {dpi}DPI ({image_spacing_pt:.2f}pt)")
     print(f"Page background color: {page_background_color_str}")
@@ -226,14 +268,13 @@ def create_pdf_grid(
     else: print("Cut lines: Disabled")
 
     if grid_content_width_pt > drawable_width_pt or grid_content_height_pt > drawable_height_pt:
-        print("Warning: Configured grid/spacing/margins may exceed paper's drawable area.") #...
+        print("Warning: Configured grid/spacing/margins may exceed paper's drawable area.")
 
-    c = canvas.Canvas(output_pdf_file, pagesize=(paper_width_pt, paper_height_pt)) # Changed here
+    c = canvas.Canvas(output_pdf_file, pagesize=(paper_width_pt, paper_height_pt)) 
     num_images_total = len(image_files)
     generated_page_count = 0
 
     for i in range(0, num_images_total, images_per_page):
-        # ... (inner loop is the same)
         page_images = image_files[i : i + images_per_page]
         generated_page_count += 1
         
@@ -254,13 +295,12 @@ def create_pdf_grid(
             try:
                 c.drawImage(image_path, x_pos, y_pos, width=target_img_width_pt, height=target_img_height_pt, mask='auto')
             except Exception as e:
-                print(f"Error drawing image {image_path}: {e}") # ... error placeholder ...
+                print(f"Error drawing image {image_path}: {e}") 
                 error_text_color = colors.white if image_cell_background_color.red<0.5 and image_cell_background_color.green<0.5 and image_cell_background_color.blue<0.5 else colors.black
                 c.setFillColor(error_text_color)
                 c.drawCentredString(x_pos + target_img_width_pt/2, y_pos + target_img_height_pt/2, "Error")
 
-
-        if cut_lines: # ... cut line drawing logic ...
+        if cut_lines: 
             c.setStrokeColor(parsed_cut_line_color); c.setLineWidth(cut_line_width_pt)
             for img_x,img_y in image_positions_on_page:
                 w,h,cll = target_img_width_pt,target_img_height_pt,cut_line_len_pt
@@ -271,7 +311,7 @@ def create_pdf_grid(
         c.showPage()
         print(f"  Generated page {generated_page_count} with {len(page_images)} images.")
     c.save()
-    print(f"PDF generation complete: {output_pdf_file}") # Changed here
+    print(f"PDF generation complete: {output_pdf_file}") 
 
 
 def main():
@@ -279,67 +319,49 @@ def main():
         description="Lay out PNG images in a grid on PDF pages (Letter: 3x3, Legal: 3x4). Supports deck list input.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
-    # --- Input/Output Arguments ---
+    parser.add_argument("--png-dir", type=str, required=True, help="Directory containing PNG files.")
     parser.add_argument(
-        "--png-dir", 
-        type=str, 
-        required=True, # Now required
-        help="Directory containing PNG files."
+        "--pdf-file", type=str, default=None, 
+        help="Output PDF. Defaults to MtgPng2Pdf.pdf, or <deck_list_name>.pdf if --deck-list used."
     )
     parser.add_argument(
-        "--pdf-file", 
-        type=str, 
-        default=None, # Default handled later based on --deck-list
-        help="Filename for the output PDF. "
-             "Defaults to MtgPng2Pdf.pdf, or <deck_list_name>.pdf if --deck-list is used."
+        "--deck-list", type=str, default=None,
+        help="Path to deck list (COUNT CARD_NAME per line). Processes only images from this list."
     )
-    parser.add_argument(
-        "--deck-list", 
-        type=str, 
-        default=None,
-        help="Path to a deck list file (COUNT CARD_NAME per line). If provided, only images from this list will be processed."
+    parser.add_argument( # New debug flag
+        "--debug", action="store_true", help="Enable detailed debug messages for name matching."
     )
     
-    # --- Page & Layout Options ---
     pg_layout_group = parser.add_argument_group('Page and Layout Options')
-    # ... (no changes to these arguments themselves) ...
-    pg_layout_group.add_argument("--paper-type", type=str, default="letter", choices=["letter", "legal"], help="Paper type (determines grid: Letter 3x3, Legal 3x4).")
+    pg_layout_group.add_argument("--paper-type", type=str, default="letter", choices=["letter", "legal"], help="Paper type (Letter 3x3, Legal 3x4).")
     pg_layout_group.add_argument("--page-margin", type=str, default="5mm", help="Margin (e.g., '5mm', '0.25in').")
     pg_layout_group.add_argument("--image-spacing-pixels", type=int, default=0, help="Spacing between images in pixels.")
     pg_layout_group.add_argument("--dpi", type=int, default=300, choices=[72, 96, 150, 300, 600], help="DPI for pixel spacing.")
     pg_layout_group.add_argument("--page-bg-color", type=str, default="white", help="Overall page background color.")
     pg_layout_group.add_argument("--image-cell-bg-color", type=str, default="black", help="Background color behind transparent image parts.")
-    pg_layout_group.add_argument("--sort", action="store_true", help="Sort input image files alphabetically (ignored if --deck-list is used).")
+    pg_layout_group.add_argument("--sort", action="store_true", help="Sort PNGs alphabetically (ignored if --deck-list is used).")
 
-    # --- Cut Line Options ---
     cut_line_group = parser.add_argument_group('Cut Line Options')
-    # ... (no changes to these arguments themselves) ...
     cut_line_group.add_argument( "--cut-lines", action="store_true", help="Enable drawing of cut lines.")
     cut_line_group.add_argument( "--cut-line-length", type=str, default="3mm", help="Length of cut lines (e.g., '3mm', '0.1in').")
     cut_line_group.add_argument( "--cut-line-color", type=str, default="gray", help="Color of cut lines.")
     cut_line_group.add_argument( "--cut-line-width-pt", type=float, default=0.25, help="Thickness of cut lines in points.")
 
-
     args = parser.parse_args()
 
-    # Determine final output PDF filename
     output_pdf_final: str
     if args.pdf_file:
         output_pdf_final = args.pdf_file
     elif args.deck_list:
         deck_list_basename_no_ext = os.path.splitext(os.path.basename(args.deck_list))[0]
-        # Place PDF in current working directory if no path in deck_list, else in deck_list's dir
         deck_list_dir = os.path.dirname(args.deck_list)
-        if deck_list_dir:
+        if deck_list_dir: 
              output_pdf_final = os.path.join(deck_list_dir, f"{deck_list_basename_no_ext}.pdf")
-        else:
+        else: 
             output_pdf_final = f"{deck_list_basename_no_ext}.pdf"
-
-    else:
+    else: 
         output_pdf_final = "MtgPng2Pdf.pdf"
 
-
-    # --- Initial Validations ---
     try: validated_paper_type = parse_paper_type(args.paper_type)
     except ValueError as e: print(f"Error: {e}"); return
     if not os.path.isdir(args.png_dir): print(f"Error: PNG directory '{args.png_dir}' not found."); return
@@ -347,15 +369,15 @@ def main():
         print(f"Error: Deck list file '{args.deck_list}' not found.")
         return
 
-
     image_files_to_process: List[str] = []
     missing_cards_from_deck: List[str] = []
 
     if args.deck_list:
         print("--- Deck List Mode ---")
-        image_files_to_process, missing_cards_from_deck = process_deck_list(args.deck_list, args.png_dir)
+        # Pass the debug flag to process_deck_list
+        image_files_to_process, missing_cards_from_deck = process_deck_list(args.deck_list, args.png_dir, args.debug) 
         if missing_cards_from_deck:
-            write_missing_cards_file(args.deck_list, missing_cards_from_deck) # Pass deck_list_path
+            write_missing_cards_file(args.deck_list, missing_cards_from_deck) 
         if not image_files_to_process:
             print("No images found based on the deck list. Exiting.")
             return
@@ -373,7 +395,7 @@ def main():
 
     create_pdf_grid(
         image_files=image_files_to_process,
-        output_pdf_file=output_pdf_final, # Pass the determined PDF filename
+        output_pdf_file=output_pdf_final, 
         paper_type_str=validated_paper_type,
         image_spacing_pixels=args.image_spacing_pixels,
         dpi=args.dpi,
