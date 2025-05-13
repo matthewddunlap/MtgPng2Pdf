@@ -5,7 +5,7 @@ import glob
 import argparse
 import unicodedata 
 import re 
-from typing import List, Tuple, Dict, Optional
+from typing import List, Tuple, Dict, Optional, Set
 
 from PIL import Image 
 from reportlab.lib.pagesizes import letter, legal
@@ -23,15 +23,13 @@ PAPER_SIZES_PT: Dict[str, Tuple[float, float]] = {
     "legal": legal,
 }
 
+# Basic Land Names (case-insensitive matching will be applied via normalization)
+BASIC_LAND_NAMES: Set[str] = {
+    "forest", "island", "mountain", "plains", "swamp"
+}
+
+
 def normalize_card_name(name: str) -> str:
-    """
-    Aggressively normalizes a card name for matching:
-    - Converts to lowercase.
-    - Removes accents and common diacritics.
-    - Removes ALL common punctuation (apostrophes, commas, hyphens, underscores etc.).
-    - Removes ALL spaces.
-    - Strips leading/trailing whitespace (mostly for safety, space removal is key).
-    """
     name = name.lower().strip()
     normalized_name = unicodedata.normalize('NFKD', name).encode('ascii', 'ignore').decode('ascii')
     normalized_name = re.sub(r"[',\-\.:()\[\]\s_]", "", normalized_name) 
@@ -42,31 +40,28 @@ def find_image_in_map(
     deck_card_name_original: str, 
     normalized_file_map: Dict[str, str] 
 ) -> Optional[str]:
-    """
-    Tries to find the card in the pre-built map of normalized filenames.
-    Relies on the aggressive normalize_card_name function.
-    """
     normalized_deck_card_name = normalize_card_name(deck_card_name_original)
-    
     if normalized_deck_card_name in normalized_file_map:
         return normalized_file_map[normalized_deck_card_name]
-            
     return None
 
 def process_deck_list(
     deck_list_path: str, 
     png_dir: str,
-    debug: bool = False # Added debug flag
+    skip_basic_land: bool, # New flag
+    debug: bool = False 
 ) -> Tuple[List[str], List[str]]:
     images_to_print: List[str] = []
     missing_card_names: List[str] = []
-    
+    skipped_basic_lands_count: Dict[str, int] = {} # To count skipped basics
+
     normalized_file_map: Dict[str, str] = {}
+    # ... (map building logic, debug prints as before) ...
     if debug:
         print(f"DEBUG: Scanning PNG directory '{png_dir}' for PNGs...")
         print("DEBUG: --- Building Normalized Filename Map (Filename Basename -> Normalized Key) ---")
-    else:
-        print(f"Scanning PNG directory '{png_dir}' for PNGs...")
+    # else: # Keep this for normal mode
+    #     print(f"Scanning PNG directory '{png_dir}' for PNGs...")
 
 
     for ext in ("*.png", "*.PNG"):
@@ -79,12 +74,12 @@ def process_deck_list(
 
             if normalized_filename_key not in normalized_file_map:
                 normalized_file_map[normalized_filename_key] = filepath
-            elif debug: # Only print warning in debug mode to avoid clutter
+            elif debug: 
                 print(f"DEBUG:     WARNING: Normalized key '{normalized_filename_key}' from '{os.path.basename(filepath)}' conflicts with existing entry for '{os.path.basename(normalized_file_map[normalized_filename_key])}'. Using first one found.")
     
     if debug:
         print("DEBUG: --- Finished Building Map ---")
-            
+
     if not normalized_file_map:
         print(f"  No PNG files found in '{png_dir}' or map is empty. Cannot process deck list.")
         try:
@@ -93,7 +88,17 @@ def process_deck_list(
                     line = line.strip()
                     if not line or line.startswith('#'): continue
                     parts = line.split(maxsplit=1)
-                    missing_card_names.append(parts[1] if len(parts) == 2 else line)
+                    card_name_in_list = parts[1] if len(parts) == 2 else line
+                    # Check if it's a basic land to skip even if no files found
+                    if skip_basic_land and normalize_card_name(card_name_in_list) in BASIC_LAND_NAMES:
+                        original_name_for_skip_msg = card_name_in_list
+                        skipped_basic_lands_count[original_name_for_skip_msg] = skipped_basic_lands_count.get(original_name_for_skip_msg, 0) + (int(parts[0]) if len(parts) == 2 and parts[0].isdigit() else 1)
+                        continue
+                    missing_card_names.append(card_name_in_list)
+            if skipped_basic_lands_count:
+                print("  Skipped the following basic lands from deck list (as no PNGs were scanned):")
+                for name, num in skipped_basic_lands_count.items():
+                    print(f"    - {num}x {name}")
             return [], list(set(missing_card_names))
         except FileNotFoundError:
             print(f"Error: Deck list file not found: {deck_list_path}")
@@ -103,7 +108,7 @@ def process_deck_list(
         print(f"DEBUG: Processing deck list: {deck_list_path}")
     else:
         print(f"Processing deck list: {deck_list_path}")
-
+        
     try:
         with open(deck_list_path, 'r', encoding='utf-8') as f:
             for line_num, line in enumerate(f, 1):
@@ -125,33 +130,45 @@ def process_deck_list(
                     missing_card_names.append(deck_card_name_original) 
                     continue
                 
+                # Check for basic land skip BEFORE attempting to find file
+                normalized_deck_list_entry = normalize_card_name(deck_card_name_original)
+                if skip_basic_land and normalized_deck_list_entry in BASIC_LAND_NAMES:
+                    if debug:
+                        print(f"DEBUG: \n  Skipping basic land: {count}x '{deck_card_name_original}'")
+                    skipped_basic_lands_count[deck_card_name_original] = skipped_basic_lands_count.get(deck_card_name_original, 0) + count
+                    continue # Move to next line in deck list
+
                 if debug:
-                    normalized_deck_list_entry = normalize_card_name(deck_card_name_original)
                     print(f"DEBUG: \n  Attempting to find: '{deck_card_name_original}' (Normalized attempt: '{normalized_deck_list_entry}')")
 
                 found_path = find_image_in_map(deck_card_name_original, normalized_file_map) 
                 
                 if found_path:
                     images_to_print.extend([found_path] * count)
-                    if debug: # Only print "Found" in debug mode
+                    if debug:
                         print(f"DEBUG:     FOUND: {count}x '{deck_card_name_original}' as '{os.path.basename(found_path)}'")
                 else:
-                    # "NOT FOUND" is important user feedback, always print
                     print(f"  NOT FOUND: {count}x '{deck_card_name_original}'") 
                     if debug:
-                        if not normalized_file_map:
-                            print("DEBUG:       Normalized file map is empty.")
+                        # ... (debug print for map keys) ...
+                        if not normalized_file_map: print("DEBUG:       Normalized file map is empty.")
                         else:
                             print("DEBUG:       Available normalized keys in map:")
-                            for key_in_map in sorted(normalized_file_map.keys()): 
-                                print(f"DEBUG:         - '{key_in_map}' (Points to: {os.path.basename(normalized_file_map[key_in_map])})")
+                            for key_in_map in sorted(normalized_file_map.keys()): print(f"DEBUG:         - '{key_in_map}' (Points to: {os.path.basename(normalized_file_map[key_in_map])})")
                     missing_card_names.append(deck_card_name_original)
     except FileNotFoundError:
         print(f"Error: Deck list file not found: {deck_list_path}")
         return [], []
+
+    if skipped_basic_lands_count:
+        print("  Skipped the following basic lands from deck list:")
+        for name, num in skipped_basic_lands_count.items():
+            print(f"    - {num}x {name}")
+
     return images_to_print, list(set(missing_card_names))
 
 def write_missing_cards_file(deck_list_path: str, missing_cards: List[str]):
+    # ... (no changes)
     if not missing_cards:
         return
     
@@ -173,6 +190,7 @@ def write_missing_cards_file(deck_list_path: str, missing_cards: List[str]):
         print(f"Error writing missing cards file '{missing_filepath}': {e}")
 
 def parse_dimension(dim_str: str, default_unit_is_mm: bool = False) -> float:
+    # ... (no changes)
     dim_str = dim_str.lower().strip()
     val_str = ""
     unit_str = ""
@@ -189,12 +207,14 @@ def parse_dimension(dim_str: str, default_unit_is_mm: bool = False) -> float:
     else: raise ValueError(f"Unknown unit '{unit_str}' in '{dim_str}'. Use in, mm, pt.")
 
 def parse_paper_type(size_str: str) -> str:
+    # ... (no changes)
     size_str = size_str.lower().strip()
     if size_str not in PAPER_SIZES_PT:
         raise ValueError(f"Invalid paper type: '{size_str}'. Supported: {', '.join(PAPER_SIZES_PT.keys())}.")
     return size_str
 
 def parse_color(color_str: str) -> colors.Color:
+    # ... (no changes)
     color_str_lower = color_str.lower()
     if hasattr(colors, color_str_lower): return getattr(colors, color_str_lower)
     elif color_str.startswith('#') and (len(color_str) == 7 or len(color_str) == 9):
@@ -217,6 +237,7 @@ def create_pdf_grid(
     cut_line_color_str: str = "gray",
     cut_line_width_pt: float = 0.25,
 ):
+    # ... (no changes)
     if not image_files:
         print("No image files to process for PDF. PDF will not be generated.")
         return
@@ -328,11 +349,15 @@ def main():
         "--deck-list", type=str, default=None,
         help="Path to deck list (COUNT CARD_NAME per line). Processes only images from this list."
     )
-    parser.add_argument( # New debug flag
+    parser.add_argument(
         "--debug", action="store_true", help="Enable detailed debug messages for name matching."
+    )
+    parser.add_argument( # New skip basic land flag
+        "--skip-basic-land", action="store_true", help="Skip processing basic lands (Forest, Island, Mountain, Plains, Swamp)."
     )
     
     pg_layout_group = parser.add_argument_group('Page and Layout Options')
+    # ... (rest of page layout args) ...
     pg_layout_group.add_argument("--paper-type", type=str, default="letter", choices=["letter", "legal"], help="Paper type (Letter 3x3, Legal 3x4).")
     pg_layout_group.add_argument("--page-margin", type=str, default="5mm", help="Margin (e.g., '5mm', '0.25in').")
     pg_layout_group.add_argument("--image-spacing-pixels", type=int, default=0, help="Spacing between images in pixels.")
@@ -341,11 +366,14 @@ def main():
     pg_layout_group.add_argument("--image-cell-bg-color", type=str, default="black", help="Background color behind transparent image parts.")
     pg_layout_group.add_argument("--sort", action="store_true", help="Sort PNGs alphabetically (ignored if --deck-list is used).")
 
+
     cut_line_group = parser.add_argument_group('Cut Line Options')
+    # ... (rest of cut line args) ...
     cut_line_group.add_argument( "--cut-lines", action="store_true", help="Enable drawing of cut lines.")
     cut_line_group.add_argument( "--cut-line-length", type=str, default="3mm", help="Length of cut lines (e.g., '3mm', '0.1in').")
     cut_line_group.add_argument( "--cut-line-color", type=str, default="gray", help="Color of cut lines.")
     cut_line_group.add_argument( "--cut-line-width-pt", type=float, default=0.25, help="Thickness of cut lines in points.")
+
 
     args = parser.parse_args()
 
@@ -374,24 +402,44 @@ def main():
 
     if args.deck_list:
         print("--- Deck List Mode ---")
-        # Pass the debug flag to process_deck_list
-        image_files_to_process, missing_cards_from_deck = process_deck_list(args.deck_list, args.png_dir, args.debug) 
-        if missing_cards_from_deck:
+        image_files_to_process, missing_cards_from_deck = process_deck_list(
+            args.deck_list, 
+            args.png_dir, 
+            args.skip_basic_land, # Pass new flag
+            args.debug
+        ) 
+        if missing_cards_from_deck: # This list will not contain skipped basic lands
             write_missing_cards_file(args.deck_list, missing_cards_from_deck) 
-        if not image_files_to_process:
-            print("No images found based on the deck list. Exiting.")
+        if not image_files_to_process: # This list will also not contain skipped basic lands
+            print("No images to print (after potential skips). Exiting.")
             return
-        print(f"Prepared {len(image_files_to_process)} images for PDF based on deck list.")
-    else:
+        print(f"Prepared {len(image_files_to_process)} images for PDF (excluding any skipped basic lands).")
+    else: # Directory Scan Mode
         print("--- Directory Scan Mode ---")
+        skipped_basics_in_dir_scan = 0
         for ext in ("*.png", "*.PNG"):
-            image_files_to_process.extend(glob.glob(os.path.join(args.png_dir, ext)))
+            for filepath in glob.glob(os.path.join(args.png_dir, ext)):
+                if args.skip_basic_land:
+                    basename_no_ext = os.path.splitext(os.path.basename(filepath))[0]
+                    if normalize_card_name(basename_no_ext) in BASIC_LAND_NAMES:
+                        if args.debug:
+                            print(f"DEBUG: Skipping basic land file from directory scan: {os.path.basename(filepath)}")
+                        skipped_basics_in_dir_scan +=1
+                        continue # Skip this file
+                image_files_to_process.append(filepath)
+        
+        if skipped_basics_in_dir_scan > 0:
+            print(f"  Skipped {skipped_basics_in_dir_scan} basic land files from directory scan.")
+
         if not image_files_to_process:
-            print(f"No PNG files found in '{args.png_dir}'. Exiting.")
+            print(f"No PNG files found in '{args.png_dir}' (or all were skipped basic lands). Exiting.")
             return
-        if args.sort:
+        if args.sort: # Sorting happens *after* potential skips
             image_files_to_process.sort()
-        print(f"Found {len(image_files_to_process)} PNG files in directory ({'sorted' if args.sort else 'unsorted'}).")
+        
+        sort_status = "sorted" if args.sort else "unsorted"
+        print(f"Found {len(image_files_to_process)} PNG files in directory ({sort_status}, excluding any skipped basic lands).")
+
 
     create_pdf_grid(
         image_files=image_files_to_process,
