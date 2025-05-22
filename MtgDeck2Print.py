@@ -95,11 +95,89 @@ def calculate_max_print_bleed_cameo(x_pos: List[int], y_pos: List[int], width: i
     return min(x_border_max, y_border_max) + 1
 
 
-def draw_card_with_border_cameo(card_image: Image.Image, base_image: Image.Image, box: tuple[int, int, int, int], print_bleed: int):
+# --- MtgDeck2Print.py (Relevant Cameo PDF functions) ---
+
+# ... (previous Cameo helper functions like calculate_max_print_bleed_cameo) ...
+
+def draw_card_with_border_cameo(
+    card_image: Image.Image, 
+    base_image: Image.Image, 
+    box: tuple[int, int, int, int], 
+    print_bleed: int,
+    cell_bg_color_pil: Union[str, Tuple[int, int, int], None] # NEW ARGUMENT
+):
     origin_x, origin_y, origin_width, origin_height = box
-    for i in reversed(range(print_bleed)):
-        card_image_resized_for_bleed = card_image.resize((origin_width + (2 * i), origin_height + (2 * i)))
-        base_image.paste(card_image_resized_for_bleed, (origin_x - i, origin_y - i), card_image_resized_for_bleed if card_image_resized_for_bleed.mode == 'RGBA' else None)
+
+    # --- NEW: Draw cell background first ---
+    if cell_bg_color_pil is not None:
+        # The cell background should cover the entire area of the card slot,
+        # including the bleed area that will be drawn.
+        # The largest extent of the bleed will be print_bleed pixels outwards from origin_width/height.
+        # So, the cell rect starts at (origin_x - print_bleed, origin_y - print_bleed)
+        # and has dimensions (origin_width + 2*print_bleed, origin_height + 2*print_bleed)
+        # However, draw_card_with_border_cameo is called with `box` representing the card *without* bleed.
+        # The bleed is added iteratively *inside* this function.
+        # The cell background should be drawn *behind* the largest bleed iteration.
+        # The largest bleed will extend `print_bleed-1` pixels beyond the `box`.
+        # So the cell background should be at (origin_x - (print_bleed-1), origin_y - (print_bleed-1))
+        # with size (origin_width + 2*(print_bleed-1), origin_height + 2*(print_bleed-1))
+        # A simpler approach matching ReportLab: The cell_bg is for the card's final footprint.
+        # The bleed is an extension of the card image itself.
+        # So, the cell background is just the `box` dimensions.
+        # Let's draw the cell background to match the card's final dimensions (box)
+        # before any bleed is applied to the card image itself.
+        
+        # The cell background should be drawn based on the slot for the card,
+        # not just the card image if it's smaller.
+        # `box` defines where the card *image* (potentially resized) goes.
+        # The underlying cell can be considered to be this box.
+        
+        draw = ImageDraw.Draw(base_image)
+        # The cell background covers the area defined by 'box' arguments.
+        # The bleed borders are drawn on top of this.
+        cell_rect_x0 = origin_x
+        cell_rect_y0 = origin_y
+        cell_rect_x1 = origin_x + origin_width
+        cell_rect_y1 = origin_y + origin_height
+        
+        # If print_bleed is > 0, the card will be drawn slightly outside this 'box'
+        # The cell background should cover the full extent of the card including bleed.
+        # The largest image drawn will be (origin_width + 2*(print_bleed-1)), (origin_height + 2*(print_bleed-1))
+        # and pasted at (origin_x - (print_bleed-1)), (origin_y - (print_bleed-1))
+        if print_bleed > 0: # If there's bleed, expand the cell background
+            # We need to be careful here. The `box` is where the card *content* (sans bleed) is placed.
+            # The bleed extends outwards from this. So the cell background should cover
+            # the `box` plus the maximum bleed extent.
+            # The `print_bleed` value here represents iterations.
+            # The largest offset is `print_bleed - 1` if `print_bleed > 0`.
+            max_offset = print_bleed -1 if print_bleed > 0 else 0
+            cell_rect_x0 = origin_x - max_offset
+            cell_rect_y0 = origin_y - max_offset
+            cell_rect_x1 = origin_x + origin_width + max_offset
+            cell_rect_y1 = origin_y + origin_height + max_offset
+
+        draw.rectangle(
+            [cell_rect_x0, cell_rect_y0, cell_rect_x1, cell_rect_y1],
+            fill=cell_bg_color_pil
+        )
+    # --- END NEW ---
+
+    for i in reversed(range(print_bleed)): # Iterates from largest bleed to smallest (actual card image)
+        # card_image is the *original* card (after source cropping/extend_corners)
+        # It gets resized here for each bleed iteration
+        card_image_resized_for_this_iteration = card_image.resize(
+            (origin_width + (2 * i), origin_height + (2 * i)) # No explicit filter
+        )
+        # Paste location is shifted outward by 'i' to center the bleed growth relative to the original box
+        paste_pos_x = origin_x - i
+        paste_pos_y = origin_y - i
+        
+        base_image.paste(
+            card_image_resized_for_this_iteration, 
+            (paste_pos_x, paste_pos_y), 
+            card_image_resized_for_this_iteration if card_image_resized_for_this_iteration.mode == 'RGBA' else None
+        )
+
 
 def draw_card_layout_cameo(
     card_images: List[Image.Image], 
@@ -111,21 +189,18 @@ def draw_card_layout_cameo(
     crop_percentage: float,
     ppi_ratio: float,
     extend_corners_src_px: int,
-    flip: bool
+    flip: bool,
+    cell_bg_color_pil: Union[str, Tuple[int, int, int], None] # NEW ARGUMENT
 ):
     num_slots_on_page = num_rows * num_cols
 
     for i, original_card_pil_image in enumerate(card_images):
         if i >= num_slots_on_page: break
-
         current_card_image = original_card_pil_image
-
         slot_x_on_page_scaled = math.floor(x_pos_layout[i % num_cols] * ppi_ratio)
         slot_y_on_page_scaled = math.floor(y_pos_layout[i // num_cols] * ppi_ratio)
         
-        if flip: # Not used for MtgDeck2Print front-only cameo
-            pass 
-
+        # ... (cropping and extend_corners logic for current_card_image remains the same) ...
         if crop_percentage > 0:
             card_w, card_h = current_card_image.size
             crop_w_px = math.floor(card_w / 2 * (crop_percentage / 100.0))
@@ -140,35 +215,44 @@ def draw_card_layout_cameo(
             ))
         
         extend_corners_page_px_scaled = math.floor(extend_corners_src_px * ppi_ratio)
-
         card_render_width_scaled = math.floor(card_width_layout * ppi_ratio) - (2 * extend_corners_page_px_scaled)
         card_render_height_scaled = math.floor(card_height_layout * ppi_ratio) - (2 * extend_corners_page_px_scaled)
 
-        paste_box = (
+        # This 'paste_box' is where the card *content* (scaled, after source cropping) will be drawn.
+        # The bleed borders extend outwards from this box.
+        paste_box_for_card_content = (
             slot_x_on_page_scaled + extend_corners_page_px_scaled, 
             slot_y_on_page_scaled + extend_corners_page_px_scaled, 
             card_render_width_scaled, 
             card_render_height_scaled
         )
 
-        final_print_bleed_for_draw_fn = math.ceil(print_bleed_layout_units * ppi_ratio) + extend_corners_page_px_scaled
+        # This is the number of bleed border iterations.
+        final_print_bleed_iterations = math.ceil(print_bleed_layout_units * ppi_ratio) + extend_corners_page_px_scaled
         
         draw_card_with_border_cameo(
-            current_card_image,
+            current_card_image, # This is the card image *after* source cropping
             base_image,
-            paste_box,
-            final_print_bleed_for_draw_fn
+            paste_box_for_card_content, # Defines the core card content area
+            final_print_bleed_iterations, # Number of 1px bleed borders to add
+            cell_bg_color_pil # Pass the color
         )
 
 def create_pdf_cameo_style(
     image_files: List[str],
     output_pdf_file: str,
-    paper_type_arg: str, # MtgDeck2Print's --paper-type ("letter", "legal")
+    paper_type_arg: str,
     target_dpi: int,
+    image_cell_bg_color_str: str, # NEW ARGUMENT
     debug: bool = False
 ):
+    # ... (initial prints and setup as before) ...
     print(f"\n--- Cameo PDF Generation (PIL-based) ---")
     print(f"Output file: {output_pdf_file}")
+    # NEW: Print cell bg color if not default
+    default_cell_bg_color = "black" # Assuming this was the implicit default
+    if image_cell_bg_color_str.lower() != default_cell_bg_color:
+        print(f"  Image Cell Background Color: {image_cell_bg_color_str}")
 
     cameo_paper_key: str
     if paper_type_arg.lower() == "letter":
@@ -253,6 +337,8 @@ def create_pdf_cameo_style(
         master_page_background = Image.new("RGB", (page_width_px_scaled, page_height_px_scaled), "white")
     # --- END: NEW - Attempt to load registration mark image ---
 
+    pil_cell_bg_color: Union[str, Tuple[int,int,int], None] = image_cell_bg_color_str
+    
     all_pil_pages: List[Image.Image] = []
     total_images_to_process = len(image_files)
 
@@ -299,7 +385,8 @@ def create_pdf_cameo_style(
             crop_percentage=crop_percentage_on_source,
             ppi_ratio=ppi_ratio,
             extend_corners_src_px=extend_corners_on_source_px,
-            flip=False
+            flip=False,
+            cell_bg_color_pil=pil_cell_bg_color # PASS THE NEW ARGUMENT
         )
         
         page_num_for_label = (page_start_index // num_cards_per_page) + 1
@@ -835,11 +922,14 @@ def main():
             if args.cameo:
                 # Warn about ignored arguments if --cameo is active
                 ignored_args_for_cameo = []
+                layout_actions_to_check = [
+                    action for action in pg_layout_group._group_actions 
+                    if action.dest != "image_cell_bg_color" # EXCLUDE this one
+                ]
                 defaults = {arg.dest: arg.default for arg in pg_layout_group._group_actions + cut_line_group._group_actions} # type: ignore
                 if args.page_margin != defaults["page_margin"]: ignored_args_for_cameo.append("--page-margin")
                 if args.image_spacing_pixels != defaults["image_spacing_pixels"]: ignored_args_for_cameo.append("--image-spacing-pixels")
                 if args.page_bg_color != defaults["page_bg_color"]: ignored_args_for_cameo.append("--page-bg-color")
-                if args.image_cell_bg_color != defaults["image_cell_bg_color"]: ignored_args_for_cameo.append("--image-cell-bg-color")
                 if args.cut_lines: ignored_args_for_cameo.append("--cut-lines") # Default is False
                 if args.cut_line_length != defaults["cut_line_length"]: ignored_args_for_cameo.append("--cut-line-length")
                 if args.cut_line_color != defaults["cut_line_color"]: ignored_args_for_cameo.append("--cut-line-color")
@@ -853,6 +943,7 @@ def main():
                     output_pdf_file=output_pdf_with_ext,
                     paper_type_arg=validated_paper_type, # This is MtgDeck2Print's "letter" or "legal"
                     target_dpi=args.dpi,
+                    image_cell_bg_color_str=args.image_cell_bg_color, # PASS THE ARGUMENT
                     debug=args.debug
                 )
             else: # Original ReportLab PDF
