@@ -9,6 +9,7 @@ import shutil # For copying files
 from typing import List, Tuple, Dict, Optional, Set, Union, Any # Moved Any here
 from collections import defaultdict # For counting copies
 import math # For cameo PDF generation
+import random
 
 from PIL import Image, ImageDraw, ImageFont # Added ImageFont
 from reportlab.lib.pagesizes import letter, legal
@@ -71,6 +72,24 @@ class CameoPaperSize: # Simplified enum style
 class CameoCardSize: # Simplified enum style
     STANDARD = "standard"
     JAPANESE = "japanese"
+
+def parse_basic_land_filename(filename: str) -> Optional[Tuple[str, str, str]]:
+    """
+    Parses a basic land filename like 'Forest-avr-242.png' or 'Island-ZEN-123b.png'.
+    Returns (land_type, set_code, unique_part) or None if not a match.
+    Assumes basic land names are in BASIC_LAND_NAMES.
+    """
+    basename_no_ext = os.path.splitext(os.path.basename(filename))[0]
+    parts = basename_no_ext.split('-')
+    
+    if len(parts) >= 3: # Expect at least Type-Set-Unique
+        land_type_candidate = parts[0].lower()
+        if land_type_candidate in BASIC_LAND_NAMES:
+            set_code = parts[1].lower()
+            # The rest is considered the unique part, even if it contains more hyphens
+            unique_part = "-".join(parts[2:]) 
+            return land_type_candidate, set_code, unique_part
+    return None
 
 def calculate_max_print_bleed_cameo(x_pos: List[int], y_pos: List[int], width: int, height: int) -> int:
     if len(x_pos) == 1 and len(y_pos) == 1:
@@ -454,75 +473,170 @@ def find_image_in_map(
         return normalized_file_map[normalized_deck_card_name]
     return None
 
+# Modified process_deck_list
+
 def process_deck_list(
-    deck_list_path: str, 
+    deck_list_path: str,
     png_dir: str,
     skip_basic_land: bool,
-    debug: bool = False 
+    basic_land_sets_filter: Optional[List[str]], # NEW ARGUMENT
+    debug: bool = False
 ) -> Tuple[List[str], List[str]]:
-    # ... (This function remains the same)
     images_to_print: List[str] = []
     missing_card_names: List[str] = []
-    skipped_basic_lands_count: Dict[str, int] = {} 
+    skipped_basic_lands_count: Dict[str, int] = {}
 
-    normalized_file_map: Dict[str, str] = {}
+    # --- Data structures for card images ---
+    # For non-basic lands (and as a fallback for basics if parsing fails)
+    normalized_file_map: Dict[str, str] = {} 
+    # For basic lands: Dict[land_type, List[Dict{'set': str, 'path': str, 'id': str}]]
+    basic_land_details: Dict[str, List[Dict[str, str]]] = defaultdict(list)
+
     if debug:
         print(f"DEBUG: Scanning PNG directory '{png_dir}' for PNGs...")
-        print("DEBUG: --- Building Normalized Filename Map (Filename Basename -> Normalized Key) ---")
+        print("DEBUG: --- Building Normalized Filename Map & Basic Land Details ---")
+        if basic_land_sets_filter:
+            print(f"DEBUG: Basic land set filter active: {basic_land_sets_filter}")
 
     for ext in ("*.png", "*.PNG"):
-        for filepath in glob.glob(os.path.join(png_dir, ext)): 
+        for filepath in glob.glob(os.path.join(png_dir, ext)):
             basename_no_ext = os.path.splitext(os.path.basename(filepath))[0]
-            normalized_filename_key = normalize_card_name(basename_no_ext) 
-            if debug:
-                print(f"DEBUG:   File: '{basename_no_ext}'  => Normalized Key: '{normalized_filename_key}' (Path: {filepath})")
+            
+            # Attempt to parse as basic land first
+            parsed_basic = parse_basic_land_filename(basename_no_ext)
+            if parsed_basic:
+                land_type, set_code, unique_id = parsed_basic
+                basic_land_details[land_type].append({
+                    'set': set_code, 
+                    'path': filepath, 
+                    'id': unique_id # For ensuring uniqueness if needed later
+                })
+                if debug:
+                    print(f"DEBUG:   Basic Land Parsed: '{basename_no_ext}' -> Type: {land_type}, Set: {set_code}, Path: {filepath}")
+            
+            # Always add to the normalized_file_map for general lookup
+            # This map is used for non-basics and as a fallback if basic land special handling fails.
+            normalized_filename_key = normalize_card_name(basename_no_ext)
+            if debug and not parsed_basic: # Only print general mapping if not already printed as basic
+                print(f"DEBUG:   Non-Basic/Other: '{basename_no_ext}' => Normalized Key: '{normalized_filename_key}' (Path: {filepath})")
+            
             if normalized_filename_key not in normalized_file_map:
                 normalized_file_map[normalized_filename_key] = filepath
-            elif debug: 
+            elif debug:
                 print(f"DEBUG:     WARNING: Normalized key '{normalized_filename_key}' from '{os.path.basename(filepath)}' conflicts. Using first found.")
-    if debug: print("DEBUG: --- Finished Building Map ---")
-            
-    if not normalized_file_map and not skip_basic_land: 
-        print(f"  No PNG files found in '{png_dir}' or map is empty. Cannot process deck list if not skipping basics.")
-    
+
+    if debug: print("DEBUG: --- Finished Building Maps ---")
+
+    if not normalized_file_map and not basic_land_details and not skip_basic_land:
+        print(f"  No PNG files found in '{png_dir}' or maps are empty. Cannot process deck list if not skipping basics.")
+
     try:
         with open(deck_list_path, 'r', encoding='utf-8') as f:
             for line_num, line in enumerate(f, 1):
                 line = line.strip()
                 if not line or line.startswith('#'): continue
+                
                 parts = line.split(maxsplit=1)
                 if len(parts) != 2:
                     print(f"  Warning: Skipping malformed line {line_num}: '{line}'"); missing_card_names.append(line); continue
+                
                 count_str, deck_card_name_original = parts
-                try: count = int(count_str)
+                try:
+                    count = int(count_str)
                 except ValueError:
                     print(f"  Warning: Invalid count line {line_num}: '{line}'"); missing_card_names.append(deck_card_name_original); continue
-                if count <= 0: print(f"  Warning: Non-positive count line {line_num}: '{line}'"); continue
-                
-                normalized_deck_list_entry = normalize_card_name(deck_card_name_original)
-                if skip_basic_land and normalized_deck_list_entry in BASIC_LAND_NAMES:
-                    if debug: print(f"DEBUG: Skipping basic land: {count}x '{deck_card_name_original}'")
-                    skipped_basic_lands_count[deck_card_name_original] = skipped_basic_lands_count.get(deck_card_name_original, 0) + count
-                    continue
+                if count <= 0:
+                    print(f"  Warning: Non-positive count line {line_num}: '{line}'"); continue
 
-                if debug: print(f"DEBUG: Attempting to find: '{deck_card_name_original}' (Normalized: '{normalized_deck_list_entry}')")
-                found_path = find_image_in_map(deck_card_name_original, normalized_file_map) 
+                normalized_deck_card_name = normalize_card_name(deck_card_name_original)
+
+                # --- Handle Basic Lands with new logic OR Skip ---
+                if normalized_deck_card_name in BASIC_LAND_NAMES:
+                    if skip_basic_land:
+                        if debug: print(f"DEBUG: Skipping basic land due to --skip-basic-land: {count}x '{deck_card_name_original}'")
+                        skipped_basic_lands_count[deck_card_name_original] = skipped_basic_lands_count.get(deck_card_name_original, 0) + count
+                        continue
+                    
+                    # --- New Basic Land Selection Logic ---
+                    if debug: print(f"DEBUG: Processing basic land: {count}x '{deck_card_name_original}' (Normalized: {normalized_deck_card_name})")
+                    
+                    available_basics_for_type = basic_land_details.get(normalized_deck_card_name, [])
+                    if not available_basics_for_type:
+                        print(f"  NOT FOUND (Basic Land): No images found for type '{deck_card_name_original}' in `basic_land_details` map.")
+                        # Try fallback to general map just in case it wasn't parsed correctly but exists
+                        found_path_fallback = find_image_in_map(deck_card_name_original, normalized_file_map)
+                        if found_path_fallback:
+                            if debug: print(f"DEBUG:   Found basic land '{deck_card_name_original}' via fallback map. Using {count} copies of '{os.path.basename(found_path_fallback)}'.")
+                            images_to_print.extend([found_path_fallback] * count)
+                        else:
+                            missing_card_names.append(f"{count}x {deck_card_name_original} (Basic Land Type Not Found)")
+                        continue
+
+                    # Filter by set if basic_land_sets_filter is provided
+                    candidate_pool = []
+                    if basic_land_sets_filter:
+                        for basic_info in available_basics_for_type:
+                            if basic_info['set'] in basic_land_sets_filter:
+                                candidate_pool.append(basic_info['path'])
+                        if debug: print(f"DEBUG:   Filtered by set(s) {basic_land_sets_filter}. Candidates for '{normalized_deck_card_name}': {len(candidate_pool)}")
+                        if not candidate_pool:
+                            print(f"  NOT FOUND (Basic Land): No '{deck_card_name_original}' found matching sets: {basic_land_sets_filter}")
+                            missing_card_names.append(f"{count}x {deck_card_name_original} (Set Mismatch: {basic_land_sets_filter})")
+                            continue
+                    else: # No set filter, use all available for this type
+                        candidate_pool = [b['path'] for b in available_basics_for_type]
+                        if debug: print(f"DEBUG:   No set filter. Candidates for '{normalized_deck_card_name}': {len(candidate_pool)}")
+
+                    if not candidate_pool: # Should be caught above, but as a safeguard
+                        print(f"  NOT FOUND (Basic Land): No candidate pool for '{deck_card_name_original}' after processing.")
+                        missing_card_names.append(f"{count}x {deck_card_name_original} (No Candidates)")
+                        continue
+                    
+                    # Now select 'count' images from candidate_pool
+                    selected_paths_for_this_basic = []
+                    num_unique_candidates = len(candidate_pool)
+
+                    if count <= num_unique_candidates:
+                        # Enough unique images, select 'count' without replacement
+                        selected_paths_for_this_basic = random.sample(candidate_pool, count)
+                        if debug: print(f"DEBUG:   Selected {count} unique basic lands for '{deck_card_name_original}' from {num_unique_candidates} candidates.")
+                    else:
+                        # Not enough unique images, take all unique then add duplicates
+                        selected_paths_for_this_basic.extend(candidate_pool) # Add all unique ones first
+                        remaining_needed = count - num_unique_candidates
+                        # Randomly pick with replacement for the remainder
+                        duplicates_to_add = random.choices(candidate_pool, k=remaining_needed)
+                        selected_paths_for_this_basic.extend(duplicates_to_add)
+                        if debug: print(f"DEBUG:   Selected all {num_unique_candidates} unique lands for '{deck_card_name_original}', plus {remaining_needed} duplicates.")
+                    
+                    images_to_print.extend(selected_paths_for_this_basic)
+                    if debug:
+                        for pth_idx, pth in enumerate(selected_paths_for_this_basic):
+                            print(f"DEBUG:     -> Basic Land {pth_idx+1}: {os.path.basename(pth)}")
+                    continue # End of basic land specific handling
+
+                # --- Handle Non-Basic Lands (Original Logic) ---
+                if debug: print(f"DEBUG: Attempting to find (non-basic): '{deck_card_name_original}' (Normalized: '{normalized_deck_card_name}')")
+                found_path = find_image_in_map(deck_card_name_original, normalized_file_map)
                 if found_path:
-                    images_to_print.extend([found_path] * count) # Add full path, repeated by count
-                    if debug: print(f"DEBUG:   FOUND: {count}x '{deck_card_name_original}' as '{os.path.basename(found_path)}'")
+                    images_to_print.extend([found_path] * count)
+                    if debug: print(f"DEBUG:   FOUND (non-basic): {count}x '{deck_card_name_original}' as '{os.path.basename(found_path)}'")
                 else:
-                    print(f"  NOT FOUND: {count}x '{deck_card_name_original}'") 
-                    if debug and normalized_file_map :
+                    print(f"  NOT FOUND (non-basic): {count}x '{deck_card_name_original}'")
+                    if debug and normalized_file_map:
                         print("DEBUG:     Available normalized keys in map:"); [print(f"DEBUG:       - '{k}'") for k in sorted(normalized_file_map.keys())]
                     elif debug: print("DEBUG:     Normalized file map is empty.")
-                    missing_card_names.append(deck_card_name_original)
+                    missing_card_names.append(deck_card_name_original) # Original name for non-basics
+    
     except FileNotFoundError:
         print(f"Error: Deck list file not found: {deck_list_path}")
         return [], []
+    
     if skipped_basic_lands_count:
-        print("  Skipped the following basic lands from deck list:")
+        print("  Skipped the following basic lands from deck list (due to --skip-basic-land):")
         for name, num in skipped_basic_lands_count.items(): print(f"    - {num}x {name}")
-    return images_to_print, list(set(missing_card_names))
+        
+    return images_to_print, list(set(missing_card_names)) # Ensure missing_card_names are unique
 
 
 def write_missing_cards_file(deck_list_path: str, missing_cards: List[str]):
@@ -799,6 +913,12 @@ def main():
              "Currently best supports --paper-type letter or a4 (if in layouts). "
              "EXPECTS an 'assets' FOLDER with registration mark images (e.g., 'letter_registration.jpg') next to the script for proper Cameo output." # MODIFIED Line
     )
+    general_group.add_argument(
+        "--basic-land-set", type=str, default=None,
+        help="Comma-separated list of set codes to filter basic lands by (e.g., 'lea,unh,neo'). "
+             "If specified, only basic lands from these sets will be considered. "
+             "Affects random selection of basic lands from --deck-list."
+    )
 
 
     # --- Page & Layout Options (for PDF/PNG grid output, LARGELY IGNORED by --cameo) ---
@@ -855,6 +975,12 @@ def main():
         validated_paper_type = parse_paper_type(args.paper_type) 
     except ValueError as e: print(f"Error: {e}"); return
 
+    # --- Parse basic_land_sets_filter ---
+    parsed_basic_land_sets: Optional[List[str]] = None
+    if args.basic_land_set:
+        parsed_basic_land_sets = [s.strip().lower() for s in args.basic_land_set.split(',') if s.strip()]
+        if args.debug and parsed_basic_land_sets:
+            print(f"DEBUG: Parsed basic land set filter: {parsed_basic_land_sets}")
 
     # --- Determine list of images to process ---
     image_files_to_process: List[str] = [] 
@@ -863,7 +989,7 @@ def main():
     if args.deck_list:
         print("--- Deck List Mode ---")
         image_files_to_process, missing_cards_from_deck = process_deck_list(
-            args.deck_list, args.png_dir, args.skip_basic_land, args.debug
+            args.deck_list, args.png_dir, args.skip_basic_land, parsed_basic_land_sets, args.debug
         ) 
         if missing_cards_from_deck: 
             write_missing_cards_file(args.deck_list, missing_cards_from_deck) 
