@@ -262,7 +262,8 @@ def create_pdf_cameo_style(
     output_pdf_file: str,
     paper_type_arg: str,
     target_dpi: int,
-    image_cell_bg_color_str: str, # NEW ARGUMENT
+    image_cell_bg_color_str: str,
+    pdf_name_label: Optional[str],
     debug: bool = False
 ):
     # ... (initial prints and setup as before) ...
@@ -409,8 +410,16 @@ def create_pdf_cameo_style(
         )
         
         page_num_for_label = (page_start_index // num_cards_per_page) + 1
+
         template_name = card_layout_config.get("template", "unknown_template")
-        label_text = f"sheet: {page_num_for_label}, template: {template_name}"
+
+        # --- MODIFIED: Construct label_text with pdf_name_label ---
+        base_label_part = f"template: {template_name}, sheet: {page_num_for_label}"
+        if pdf_name_label: # If a name is provided
+            label_text = f"name: {pdf_name_label}, {base_label_part}"
+        else:
+            label_text = base_label_part
+        # --- END MODIFICATION ---
 
         try:
             draw_page_text = ImageDraw.Draw(current_page_pil_image)
@@ -1042,6 +1051,8 @@ def main():
             base_output_filename_final = os.path.join(dl_dir, dl_bn) if dl_dir else dl_bn
         else: base_output_filename_final = "MtgProxyOutput"
 
+        name_for_pdf_label = os.path.basename(base_output_filename_final) # Get just the filename part for the label
+
         if args.output_format == "pdf":
             output_pdf_with_ext = f"{base_output_filename_final}.pdf"
             
@@ -1069,7 +1080,8 @@ def main():
                     output_pdf_file=output_pdf_with_ext,
                     paper_type_arg=validated_paper_type, # This is MtgDeck2Print's "letter" or "legal"
                     target_dpi=args.dpi,
-                    image_cell_bg_color_str=args.image_cell_bg_color, # PASS THE ARGUMENT
+                    image_cell_bg_color_str=args.image_cell_bg_color,
+                    pdf_name_label=name_for_pdf_label,
                     debug=args.debug
                 )
             else: # Original ReportLab PDF
