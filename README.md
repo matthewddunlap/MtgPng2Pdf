@@ -15,15 +15,15 @@ sudo apt install chromium chromium-driver jq python3-lxml python3-natsort python
 ## Examples
 ###Generate PDF for manual cutting
 ```
-python3 MtgPng2Pdf.py --png-dir card_images/m15ub --pdf-file myDeck.pdf --deck-list myDeck.txt --cut-lines --cut-line-width-pt 2
+python3 MtgPng2Pdf.py --png-dir card_images/m15ub --output-format pdf --output-file myDeck.pdf --deck-list myDeck.txt --cut-lines --cut-line-width-pt 2
 ```
 
 ### Generate PDF for automated cutting with Silhouette Cameo (default 300dpi)
 ```
-python3 MtgPng2Pdf.py --png-dir card_images/m15ub --pdf-file myDeck.pdf --deck-list myDeck.txt --cameo
+python3 MtgPng2Pdf.py --png-dir card_images/m15ub --output-format pdf --output-file myDeck.pdf --deck-list myDeck.txt --cameo
 ```
 
 ### Same as above but at 600dpi and skipping basic lands
 ```
-python3 MtgPng2Pdf.py --png-dir card_images/m15ub --pdf-file myDeck.pdf --deck-list myDeck.txt --skip-basic-land  --cameo --dpi 600
+python3 MtgPng2Pdf.py --png-dir card_images/m15ub --output-format pdf --output-file myDeck.pdf --deck-list myDeck.txt --skip-basic-land  --cameo --dpi 600
 ```
