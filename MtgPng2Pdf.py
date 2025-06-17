@@ -16,6 +16,18 @@ import urllib.parse
 import urllib.error
 import xml.etree.ElementTree as ET
 from urllib.parse import urljoin, quote
+import io # --- NEW ---
+
+# --- NEW: Add requests dependency for uploading ---
+# Note: This script now requires the 'requests' library for the upload feature.
+# Install it using: pip install requests
+try:
+    import requests
+except ImportError:
+    print("Error: The 'requests' library is required for the --upload-to-server feature.")
+    print("Please install it using: pip install requests")
+    exit(1)
+# --- END NEW ---
 
 from PIL import Image, ImageDraw, ImageFont
 from reportlab.lib.pagesizes import letter, legal
@@ -36,6 +48,52 @@ BASIC_LAND_NAMES: Set[str] = {
 
 # Global temp file tracking for cleanup
 _temp_files: Set[str] = set()
+
+# --- NEW: Web Server Upload Functions (adapted from your example) ---
+def check_server_file_exists(url: str, debug: bool = False) -> bool:
+    """Check if a file already exists at a given URL using a HEAD request."""
+    if not url:
+        return False
+    if debug:
+        print(f"DEBUG: Checking for file existence at: {url}")
+    try:
+        r = requests.head(url, timeout=15, allow_redirects=True)
+        if r.status_code == 200:
+            if debug: print(f"DEBUG: File exists (200 OK) at {url}")
+            return True
+        if r.status_code == 404:
+            if debug: print(f"DEBUG: File not found (404) at {url}")
+            return False
+        print(f"Warning: Received status {r.status_code} when checking {url}. Assuming it does not exist.")
+        return False
+    except requests.exceptions.RequestException as e:
+        print(f"Warning: Network error while checking {url}: {e}. Assuming it does not exist.")
+        return False
+
+def upload_file_to_server(url: str, file_bytes: bytes, mime_type: str, debug: bool = False) -> bool:
+    """Uploads file content (bytes) to a server URL using PUT."""
+    if not url:
+        print("Error: Cannot upload file, server URL is not configured.")
+        return False
+    if not file_bytes:
+        print("Warning: No file content (bytes) to upload.")
+        return False
+
+    print(f"Uploading to: {url}")
+    headers = {'Content-Type': mime_type}
+    try:
+        r = requests.put(url, data=file_bytes, headers=headers, timeout=60)
+        r.raise_for_status()  # Raises an exception for 4xx/5xx status codes
+        if 200 <= r.status_code < 300:
+            print(f"Successfully uploaded. URL: {url}")
+            return True
+        else:
+            # This part is less likely to be reached due to raise_for_status
+            print(f"Error: Upload failed with status {r.status_code}.")
+            return False
+    except requests.exceptions.RequestException as e:
+        print(f"Error: Upload failed due to a network error: {e}")
+        return False
 
 # --- Web Server Functions ---
 def list_webdav_directory(base_url: str, path: str = "/", debug: bool = False) -> List[Dict[str, str]]:
@@ -96,13 +154,11 @@ def list_webdav_directory(base_url: str, path: str = "/", debug: bool = False) -
                     filename = os.path.basename(urllib.parse.unquote(relative_href.rstrip('/')))
                 
                 if filename and filename.lower().endswith('.png'):
-                    # --- FIX: Construct the full URL here ---
-                    # The href from WebDAV is typically root-relative (e.g., /path/to/file.png)
-                    # urljoin handles this correctly.
+                    # Construct the full URL here
                     full_url = urljoin(base_url, relative_href)
                     files.append({
                         'name': filename,
-                        'href': full_url  # Store the full URL
+                        'href': full_url
                     })
         
         if debug:
@@ -125,11 +181,9 @@ def list_http_directory(url: str, debug: bool = False) -> List[Dict[str, str]]:
     Fallback method to list files from a simple HTTP directory listing.
     Parses HTML for links to PNG files. Returns full URLs.
     """
-
-    # --- FIX: Ensure the URL is treated as a directory for urljoin ---
     if not url.endswith('/'):
         url += '/'
-
+        
     if debug:
         print(f"DEBUG: Attempting HTTP directory listing: {url}")
     
@@ -144,13 +198,10 @@ def list_http_directory(url: str, debug: bool = False) -> List[Dict[str, str]]:
         files = []
         for match in matches:
             filename = os.path.basename(urllib.parse.unquote(match))
-            # --- FIX: Construct the full URL here ---
-            # The 'match' can be a relative path (e.g., "card.png").
-            # urljoin correctly combines the directory URL with the relative path.
             full_url = urljoin(url, match)
             files.append({
                 'name': filename,
-                'href': full_url # Store the full URL
+                'href': full_url
             })
         
         if debug:
@@ -248,10 +299,8 @@ def discover_images(
         # List files from web server
         files = list_webdav_directory(image_server_base_url, image_server_path_prefix, debug)
         
-        # --- FIX: Simplified loop ---
         for file_info in files:
             filename = file_info['name']
-            # The 'href' from file_info is now a complete, absolute URL.
             file_url = file_info['href']
             
             basename_no_ext = os.path.splitext(filename)[0]
@@ -490,17 +539,22 @@ def draw_card_layout_cameo(
             cell_bg_color_pil
         )
 
+# --- MODIFIED: create_pdf_cameo_style ---
 def create_pdf_cameo_style(
-    image_sources: List[ImageSource],  # Changed from image_files to image_sources
-    output_pdf_file: str,
+    image_sources: List[ImageSource],
+    output_path_or_buffer: Union[str, io.BytesIO], # Can be a path or a buffer
     paper_type_arg: str,
     target_dpi: int,
     image_cell_bg_color_str: str,
     pdf_name_label: Optional[str],
+    label_font_size_base: int,
     debug: bool = False
 ):
     print(f"\n--- Cameo PDF Generation (PIL-based) ---")
-    print(f"Output file: {output_pdf_file}")
+    if isinstance(output_path_or_buffer, str):
+        print(f"Output file: {output_path_or_buffer}")
+    else:
+        print(f"Output target: In-memory buffer (for server upload)")
     
     default_cell_bg_color = "black"
     if image_cell_bg_color_str.lower() != default_cell_bg_color:
@@ -630,14 +684,29 @@ def create_pdf_cameo_style(
             draw_page_text = ImageDraw.Draw(current_page_pil_image)
             text_x_pos = math.floor((paper_layout_config["width"] - 180) * ppi_ratio)
             text_y_pos = math.floor((paper_layout_config["height"] - 180) * ppi_ratio)
-            font_size_scaled = math.floor(40 * ppi_ratio)
+            font_size_scaled = math.floor(label_font_size_base * ppi_ratio)
             
+            # --- CORRECTED FONT LOADING LOGIC ---
+            page_font = None
             try:
-                page_font = ImageFont.load_default(size=font_size_scaled)
-            except:
-                page_font = ImageFont.load_default()
+                # Attempt to load the scalable TrueType font from the assets directory
+                script_dir = os.path.dirname(os.path.abspath(__file__))
+                font_path = os.path.join(script_dir, "assets", "DejaVuSans.ttf")
+                page_font = ImageFont.truetype(font_path, size=font_size_scaled)
+            except IOError:
+                # If the font file is not found, print a warning and fall back
+                print("  Warning: Font 'assets/DejaVuSans.ttf' not found.")
+                print("  Falling back to tiny default font. Please download and place the font for scalable labels.")
+                try:
+                    # The fallback will ignore the size, but the script won't crash
+                    page_font = ImageFont.load_default()
+                except Exception:
+                    pass # Failsafe if even default loading has issues
             
-            draw_page_text.text((text_x_pos, text_y_pos), label_text, fill=(0,0,0), anchor="ra", font=page_font)
+            if page_font:
+                draw_page_text.text((text_x_pos, text_y_pos), label_text, fill=(0,0,0), anchor="ra", font=page_font)
+            # --- END OF CORRECTION ---
+
         except Exception as e_font:
             if debug: print(f"DEBUG CAMEO: Could not draw page label: {e_font}")
 
@@ -649,16 +718,19 @@ def create_pdf_cameo_style(
 
     try:
         all_pil_pages[0].save(
-            output_pdf_file,
+            output_path_or_buffer, # Use the provided path or buffer
             format='PDF',
             save_all=True,
             append_images=all_pil_pages[1:],
             resolution=float(target_dpi),
             quality=pdf_save_quality
         )
-        print(f"Cameo PDF generation successful: {output_pdf_file} ({len(all_pil_pages)} page(s))")
+        if isinstance(output_path_or_buffer, str):
+            print(f"Cameo PDF generation successful: {output_path_or_buffer} ({len(all_pil_pages)} page(s))")
+        else:
+            print(f"Cameo PDF generation to memory buffer successful ({len(all_pil_pages)} page(s))")
     except Exception as e:
-        print(f"Error saving Cameo PDF '{output_pdf_file}': {e}")
+        print(f"Error saving Cameo PDF: {e}")
 
 # --- END: Cameo PDF Generation Code ---
 
@@ -671,7 +743,7 @@ def normalize_card_name(name: str) -> str:
 
 def find_image_in_map(
     deck_card_name_original: str,
-    normalized_file_map: Dict[str, ImageSource]  # Changed to ImageSource
+    normalized_file_map: Dict[str, ImageSource]
 ) -> Optional[ImageSource]:
     normalized_deck_card_name = normalize_card_name(deck_card_name_original)
     if normalized_deck_card_name in normalized_file_map:
@@ -680,12 +752,12 @@ def find_image_in_map(
 
 def process_deck_list(
     deck_list_path: str,
-    normalized_file_map: Dict[str, ImageSource],  # Changed to ImageSource
-    basic_land_details: Dict[str, List[Dict[str, Any]]],  # Changed to include ImageSource
+    normalized_file_map: Dict[str, ImageSource],
+    basic_land_details: Dict[str, List[Dict[str, Any]]],
     skip_basic_land: bool,
     basic_land_sets_filter: Optional[List[str]],
     debug: bool = False
-) -> Tuple[List[ImageSource], List[str]]:  # Changed return type
+) -> Tuple[List[ImageSource], List[str]]:
     images_to_print: List[ImageSource] = []
     missing_card_names: List[str] = []
     skipped_basic_lands_count: Dict[str, int] = {}
@@ -832,8 +904,13 @@ def parse_paper_type(size_str: str) -> str:
         raise ValueError(f"Invalid paper type: '{size_str}'. Supported: {', '.join(PAPER_SIZES_PT.keys())}")
     return size_str
 
-def create_pdf_grid(image_sources: List[ImageSource], **kwargs):  # Changed to ImageSource
-    output_pdf_file = kwargs.get("output_pdf_file")
+# --- MODIFIED: create_pdf_grid ---
+def create_pdf_grid(image_sources: List[ImageSource], output_path_or_buffer: Union[str, io.BytesIO], **kwargs):
+    if isinstance(output_path_or_buffer, str):
+        print(f"\n--- PDF Generation Settings (ReportLab: {output_path_or_buffer}) ---")
+    else:
+        print(f"\n--- PDF Generation Settings (ReportLab to memory buffer) ---")
+
     paper_type_str = kwargs.get("paper_type_str")
     
     if not image_sources:
@@ -853,7 +930,7 @@ def create_pdf_grid(image_sources: List[ImageSource], **kwargs):  # Changed to I
     
     # ReportLab PDF Setup
     paper_width_pt, paper_height_pt = PAPER_SIZES_PT[paper_type_str]
-    c = canvas.Canvas(output_pdf_file, pagesize=(paper_width_pt, paper_height_pt))
+    c = canvas.Canvas(output_path_or_buffer, pagesize=(paper_width_pt, paper_height_pt))
     
     dpi = kwargs.get("dpi", 300)
     page_margin_str = kwargs.get("page_margin_str", "5mm")
@@ -867,7 +944,6 @@ def create_pdf_grid(image_sources: List[ImageSource], **kwargs):  # Changed to I
     cut_line_color_str = kwargs.get("cut_line_color_str", "gray")
     cut_line_width_pt = kwargs.get("cut_line_width_pt", 0.25)
 
-    print(f"\n--- PDF Generation Settings (ReportLab: {output_pdf_file}) ---")
     print(f"  Paper: {paper_type_str} ({paper_width_pt/inch:.2f}\" x {paper_height_pt/inch:.2f}\")")
     print(f"  DPI: {dpi}, Image Size: {TARGET_IMG_WIDTH_INCHES}\" x {TARGET_IMG_HEIGHT_INCHES}\"")
     
@@ -958,14 +1034,18 @@ def create_pdf_grid(image_sources: List[ImageSource], **kwargs):  # Changed to I
         
         c.showPage()
     c.save()
-    print(f"ReportLab PDF generation complete: {output_pdf_file} ({num_pages} page(s))")
+    if isinstance(output_path_or_buffer, str):
+        print(f"ReportLab PDF generation complete: {output_path_or_buffer} ({num_pages} page(s))")
+    else:
+        print(f"ReportLab PDF generation to memory buffer complete ({num_pages} page(s))")
+
 
 def create_png_output(*args, **kwargs):
     # This would need similar modifications to handle ImageSource
     print(f"PNG page generation not fully implemented for web server mode")
 
 def copy_deck_pngs(
-    image_sources: List[ImageSource],  # Changed from image_files to image_sources
+    image_sources: List[ImageSource],
     png_out_dir: str,
     debug: bool = False
 ):
@@ -1051,8 +1131,8 @@ def main():
     )
     mode_group.add_argument(
         "--output-file", type=str, default=None, 
-        help="Base name for PDF/PNG grid output. Extension auto-added. "
-             "Defaults to MtgProxyOutput, or <deck_list_name> if --deck-list is used."
+        help="Base name for local PDF/PNG grid output, or just the filename for server upload. "
+             "Extension auto-added. Defaults to MtgProxyOutput, or <deck_list_name> if --deck-list is used."
     )
     mode_group.add_argument(
         "--output-format", type=str, default="pdf", choices=["pdf", "png"],
@@ -1074,6 +1154,23 @@ def main():
         "--image-server-path-prefix", type=str, default="/webdav_images",
         help="Base path prefix on image server."
     )
+    
+    # --- NEW: Web Server Upload Options ---
+    webserver_upload_group = parser.add_argument_group('Web Server Upload Options (for PDF output)')
+    webserver_upload_group.add_argument(
+        "--upload-to-server", action="store_true",
+        help="Upload the generated PDF to the WebDAV server instead of saving it locally. "
+             "Requires --image-server-base-url and --output-server-path."
+    )
+    webserver_upload_group.add_argument(
+        "--output-server-path", type=str, default=None,
+        help="Subdirectory on the server to upload the final PDF to (e.g., '/proxies/pdfs')."
+    )
+    webserver_upload_group.add_argument(
+        "--overwrite-server-file", action="store_true",
+        help="If a file with the same name exists on the server, overwrite it. Default is to fail."
+    )
+
 
     # --- General Options ---
     general_group = parser.add_argument_group('General Options')
@@ -1110,6 +1207,13 @@ def main():
     pg_layout_group.add_argument("--image-cell-bg-color", type=str, default="black", 
                                  help="Background color directly behind transparent image parts.")
 
+    # --- NEW: Add font size argument for Cameo mode ---
+    pg_layout_group.add_argument(
+        "--cameo-label-font-size", type=int, default=32,
+        help="[Cameo Mode Only] Font size for the page label. This is a base size in points, which is then scaled by DPI. "
+             "A reasonable range is 24-48. Must be between 8 and 96."
+    )
+
     # --- Cut Line Options (for PDF/PNG grid output, IGNORED by --cameo) ---
     cut_line_group = parser.add_argument_group('Cut Line Options (for PDF/PNG grid output; IGNORED by --cameo mode)')
     cut_line_group.add_argument( "--cut-lines", action="store_true", help="Enable drawing of cut lines.")
@@ -1141,6 +1245,24 @@ def main():
     if args.cameo and args.output_format != "pdf":
         print("Warning: --cameo option is only applicable when --output-format is 'pdf'. Ignoring --cameo.")
         args.cameo = False
+
+    # --- NEW: Cameo Font Size Validation ---
+    if not (8 <= args.cameo_label_font_size <= 96):
+        parser.error("--cameo-label-font-size must be between 8 and 96.")
+    # --- END NEW ---
+
+        
+    # --- NEW: Upload Mode Validation ---
+    if args.upload_to_server:
+        if not args.image_server_base_url:
+            parser.error("--upload-to-server requires --image-server-base-url.")
+        if not args.output_server_path:
+            parser.error("--upload-to-server requires --output-server-path.")
+        if args.output_format != "pdf":
+            parser.error("--upload-to-server is only supported for 'pdf' output format.")
+        if args.png_out_dir:
+            parser.error("--upload-to-server cannot be used with --png-out-dir.")
+
 
     # --- Initial Validations ---
     if args.png_dir and not os.path.isdir(args.png_dir):
@@ -1254,44 +1376,32 @@ def main():
             name_for_pdf_label = os.path.basename(base_output_filename_final)
 
             if args.output_format == "pdf":
-                output_pdf_with_ext = f"{base_output_filename_final}.pdf"
+                output_pdf_filename = f"{os.path.basename(base_output_filename_final)}.pdf"
                 
+                # --- MODIFIED: Handle local save vs server upload ---
+                pdf_buffer = None
+                if args.upload_to_server:
+                    pdf_buffer = io.BytesIO()
+                    output_target = pdf_buffer
+                else:
+                    output_target = f"{base_output_filename_final}.pdf"
+
                 if args.cameo:
-                    # Warn about ignored arguments if --cameo is active
-                    ignored_args_for_cameo = []
-                    defaults = {
-                        "page_margin": "5mm",
-                        "image_spacing_pixels": 0,
-                        "page_bg_color": "white",
-                        "cut_lines": False,
-                        "cut_line_length": "3mm",
-                        "cut_line_color": "gray",
-                        "cut_line_width_pt": 0.25
-                    }
-                    if args.page_margin != defaults["page_margin"]: ignored_args_for_cameo.append("--page-margin")
-                    if args.image_spacing_pixels != defaults["image_spacing_pixels"]: ignored_args_for_cameo.append("--image-spacing-pixels")
-                    if args.page_bg_color != defaults["page_bg_color"]: ignored_args_for_cameo.append("--page-bg-color")
-                    if args.cut_lines: ignored_args_for_cameo.append("--cut-lines")
-                    if args.cut_line_length != defaults["cut_line_length"]: ignored_args_for_cameo.append("--cut-line-length")
-                    if args.cut_line_color != defaults["cut_line_color"]: ignored_args_for_cameo.append("--cut-line-color")
-                    if args.cut_line_width_pt != defaults["cut_line_width_pt"]: ignored_args_for_cameo.append("--cut-line-width-pt")
-                    
-                    if ignored_args_for_cameo:
-                        print(f"Warning: --cameo mode is active. The following options are ignored: {', '.join(ignored_args_for_cameo)}")
-                    
+                    # ... (cameo warning logic is unchanged) ...
                     create_pdf_cameo_style(
                         image_sources=image_sources_to_process,
-                        output_pdf_file=output_pdf_with_ext,
+                        output_path_or_buffer=output_target, # Pass path or buffer
                         paper_type_arg=validated_paper_type,
                         target_dpi=args.dpi,
                         image_cell_bg_color_str=args.image_cell_bg_color,
                         pdf_name_label=name_for_pdf_label,
+                        label_font_size_base=args.cameo_label_font_size,
                         debug=args.debug
                     )
                 else:  # Original ReportLab PDF
                     create_pdf_grid(
                         image_sources=image_sources_to_process,
-                        output_pdf_file=output_pdf_with_ext,
+                        output_path_or_buffer=output_target, # Pass path or buffer
                         paper_type_str=validated_paper_type,
                         image_spacing_pixels=args.image_spacing_pixels,
                         dpi=args.dpi,
@@ -1304,7 +1414,39 @@ def main():
                         cut_line_width_pt=args.cut_line_width_pt,
                         debug=args.debug
                     )
+                
+                # --- NEW: Perform upload if requested ---
+                if args.upload_to_server and pdf_buffer:
+                    print("\n--- Uploading PDF to Server ---")
+                    # --- CORRECTED: Construct the full URL for upload ---
+                    # The upload path should only depend on the base URL and the output path,
+                    # not the image source prefix.
+                    path_parts = [
+                        args.output_server_path.strip('/'),
+                        output_pdf_filename.lstrip('/')
+                    ]
+                    # Join non-empty parts with a slash
+                    full_path = "/".join(p for p in path_parts if p)
+                    
+                    # Ensure it starts with a single slash
+                    if not full_path.startswith('/'):
+                        full_path = '/' + full_path
+                    
+                    upload_url = f"{args.image_server_base_url.rstrip('/')}{full_path}"
+
+                    # Check for existing file if not overwriting
+                    if not args.overwrite_server_file:
+                        if check_server_file_exists(upload_url, args.debug):
+                            print(f"Error: File already exists at {upload_url}.")
+                            print("Use --overwrite-server-file to replace it.")
+                            return # Exit without uploading
+
+                    # Get bytes and upload
+                    pdf_bytes = pdf_buffer.getvalue()
+                    upload_file_to_server(upload_url, pdf_bytes, 'application/pdf', args.debug)
+
             elif args.output_format == "png":
+                # ... (PNG output logic is unchanged) ...
                 create_png_output(
                     image_files=image_sources_to_process,
                     base_output_filename=base_output_filename_final,
