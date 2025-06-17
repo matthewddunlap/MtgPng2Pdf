@@ -5,13 +5,19 @@ import glob
 import argparse
 import unicodedata
 import re
-import shutil # For copying files
-from typing import List, Tuple, Dict, Optional, Set, Union, Any # Moved Any here
-from collections import defaultdict # For counting copies
-import math # For cameo PDF generation
+import shutil
+from typing import List, Tuple, Dict, Optional, Set, Union, Any
+from collections import defaultdict
+import math
 import random
+import tempfile
+import urllib.request
+import urllib.parse
+import urllib.error
+import xml.etree.ElementTree as ET
+from urllib.parse import urljoin, quote
 
-from PIL import Image, ImageDraw, ImageFont # Added ImageFont
+from PIL import Image, ImageDraw, ImageFont
 from reportlab.lib.pagesizes import letter, legal
 from reportlab.lib.units import inch, mm
 from reportlab.lib import colors as reportlab_colors
@@ -28,31 +34,296 @@ BASIC_LAND_NAMES: Set[str] = {
     "forest", "island", "mountain", "plains", "swamp"
 }
 
+# Global temp file tracking for cleanup
+_temp_files: Set[str] = set()
+
+# --- Web Server Functions ---
+def list_webdav_directory(base_url: str, path: str = "/", debug: bool = False) -> List[Dict[str, str]]:
+    """
+    List files in a WebDAV directory using PROPFIND.
+    Returns a list of dicts with 'name' and 'href' keys.
+    """
+    url = urljoin(base_url, path)
+    if debug:
+        print(f"DEBUG: Listing WebDAV directory: {url}")
+    
+    # Build PROPFIND request
+    propfind_body = '''<?xml version="1.0" encoding="utf-8"?>
+    <D:propfind xmlns:D="DAV:">
+        <D:prop>
+            <D:displayname/>
+            <D:resourcetype/>
+        </D:prop>
+    </D:propfind>'''
+    
+    req = urllib.request.Request(
+        url,
+        data=propfind_body.encode('utf-8'),
+        headers={
+            'Content-Type': 'application/xml; charset=utf-8',
+            'Depth': '1'
+        },
+        method='PROPFIND'
+    )
+    
+    try:
+        with urllib.request.urlopen(req) as response:
+            content = response.read().decode('utf-8')
+            
+        # Parse XML response
+        root = ET.fromstring(content)
+        files = []
+        
+        # Define namespace
+        ns = {'d': 'DAV:'}
+        
+        for response_elem in root.findall('.//d:response', ns):
+            href_elem = response_elem.find('d:href', ns)
+            displayname_elem = response_elem.find('.//d:displayname', ns)
+            resourcetype_elem = response_elem.find('.//d:resourcetype', ns)
+            
+            if href_elem is not None:
+                href = href_elem.text
+                # Skip directories (they have a <collection/> element)
+                if resourcetype_elem is not None and resourcetype_elem.find('d:collection', ns) is not None:
+                    continue
+                    
+                # Get filename
+                if displayname_elem is not None and displayname_elem.text:
+                    filename = displayname_elem.text
+                else:
+                    # Extract filename from href
+                    filename = os.path.basename(urllib.parse.unquote(href.rstrip('/')))
+                
+                if filename and filename.lower().endswith('.png'):
+                    files.append({
+                        'name': filename,
+                        'href': href
+                    })
+        
+        if debug:
+            print(f"DEBUG: Found {len(files)} PNG files in WebDAV directory")
+        
+        return files
+        
+    except urllib.error.HTTPError as e:
+        if e.code == 405:  # Method not allowed - try simple directory listing
+            return list_http_directory(url, debug)
+        else:
+            print(f"Error listing WebDAV directory: HTTP {e.code} - {e.reason}")
+            return []
+    except Exception as e:
+        print(f"Error listing WebDAV directory: {e}")
+        return []
+
+def list_http_directory(url: str, debug: bool = False) -> List[Dict[str, str]]:
+    """
+    Fallback method to list files from a simple HTTP directory listing.
+    Parses HTML for links to PNG files.
+    """
+    if debug:
+        print(f"DEBUG: Attempting HTTP directory listing: {url}")
+    
+    try:
+        with urllib.request.urlopen(url) as response:
+            content = response.read().decode('utf-8')
+        
+        # Simple regex to find links to PNG files
+        png_pattern = r'href="([^"]+\.png)"'
+        matches = re.findall(png_pattern, content, re.IGNORECASE)
+        
+        files = []
+        for match in matches:
+            filename = os.path.basename(urllib.parse.unquote(match))
+            files.append({
+                'name': filename,
+                'href': match
+            })
+        
+        if debug:
+            print(f"DEBUG: Found {len(files)} PNG files in HTTP directory listing")
+        
+        return files
+        
+    except Exception as e:
+        print(f"Error listing HTTP directory: {e}")
+        return []
+
+def download_image(url: str, dest_path: Optional[str] = None, debug: bool = False) -> Optional[str]:
+    """
+    Download an image from URL. If dest_path is None, saves to a temp file.
+    Returns the path to the downloaded file, or None on error.
+    """
+    if debug:
+        print(f"DEBUG: Downloading image from {url}")
+    
+    try:
+        # Create temp file if no destination specified
+        if dest_path is None:
+            fd, dest_path = tempfile.mkstemp(suffix='.png')
+            os.close(fd)
+            _temp_files.add(dest_path)
+        
+        # Download the file
+        urllib.request.urlretrieve(url, dest_path)
+        
+        if debug:
+            print(f"DEBUG: Downloaded to {dest_path}")
+        
+        return dest_path
+        
+    except Exception as e:
+        print(f"Error downloading image from {url}: {e}")
+        if dest_path and os.path.exists(dest_path):
+            os.remove(dest_path)
+            _temp_files.discard(dest_path)
+        return None
+
+class ImageSource:
+    """Wrapper class to handle both local files and web URLs uniformly"""
+    def __init__(self, path_or_url: str, is_url: bool = False):
+        self.original = path_or_url
+        self.is_url = is_url
+        self.local_path = None if is_url else path_or_url
+        self.temp_file = None
+    
+    def get_local_path(self, debug: bool = False) -> Optional[str]:
+        """Get a local file path, downloading if necessary"""
+        if not self.is_url:
+            return self.local_path
+        
+        if self.temp_file is None:
+            self.temp_file = download_image(self.original, debug=debug)
+        
+        return self.temp_file
+    
+    def cleanup(self):
+        """Clean up any temporary files"""
+        if self.temp_file and os.path.exists(self.temp_file):
+            try:
+                os.remove(self.temp_file)
+                _temp_files.discard(self.temp_file)
+            except:
+                pass
+            self.temp_file = None
+    
+    def __del__(self):
+        self.cleanup()
+
+# --- Modified PNG discovery function ---
+def discover_images(
+    png_dir: Optional[str] = None,
+    image_server_base_url: Optional[str] = None,
+    image_server_path_prefix: str = "/webdav_images",
+    skip_basic_land: bool = False,
+    basic_land_sets_filter: Optional[List[str]] = None,
+    debug: bool = False
+) -> Tuple[Dict[str, ImageSource], Dict[str, List[Dict[str, Any]]]]:
+    """
+    Discover images from local directory or web server.
+    Returns (normalized_file_map, basic_land_details)
+    """
+    normalized_file_map: Dict[str, ImageSource] = {}
+    basic_land_details: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    
+    if image_server_base_url:
+        # Web server mode
+        if debug:
+            print(f"DEBUG: Discovering images from web server: {image_server_base_url}")
+            print(f"DEBUG: Path prefix: {image_server_path_prefix}")
+        
+        # List files from web server
+        files = list_webdav_directory(image_server_base_url, image_server_path_prefix, debug)
+        
+        for file_info in files:
+            filename = file_info['name']
+            # Construct full URL
+            if file_info['href'].startswith('http'):
+                file_url = file_info['href']
+            else:
+                file_url = urljoin(image_server_base_url, file_info['href'])
+            
+            basename_no_ext = os.path.splitext(filename)[0]
+            
+            # Create ImageSource wrapper
+            img_source = ImageSource(file_url, is_url=True)
+            
+            # Attempt to parse as basic land
+            parsed_basic = parse_basic_land_filename(basename_no_ext)
+            if parsed_basic:
+                land_type, set_code, unique_id = parsed_basic
+                basic_land_details[land_type].append({
+                    'set': set_code,
+                    'source': img_source,
+                    'id': unique_id
+                })
+                if debug:
+                    print(f"DEBUG:   Basic Land Parsed: '{basename_no_ext}' -> Type: {land_type}, Set: {set_code}, URL: {file_url}")
+            
+            # Always add to normalized map
+            normalized_filename_key = normalize_card_name(basename_no_ext)
+            if normalized_filename_key not in normalized_file_map:
+                normalized_file_map[normalized_filename_key] = img_source
+            elif debug:
+                print(f"DEBUG:     WARNING: Normalized key '{normalized_filename_key}' from '{filename}' conflicts. Using first found.")
+    
+    elif png_dir:
+        # Local directory mode (original behavior)
+        if debug:
+            print(f"DEBUG: Scanning PNG directory '{png_dir}' for PNGs...")
+        
+        for ext in ("*.png", "*.PNG"):
+            for filepath in glob.glob(os.path.join(png_dir, ext)):
+                basename_no_ext = os.path.splitext(os.path.basename(filepath))[0]
+                
+                # Create ImageSource wrapper for local file
+                img_source = ImageSource(filepath, is_url=False)
+                
+                # Attempt to parse as basic land
+                parsed_basic = parse_basic_land_filename(basename_no_ext)
+                if parsed_basic:
+                    land_type, set_code, unique_id = parsed_basic
+                    basic_land_details[land_type].append({
+                        'set': set_code,
+                        'source': img_source,
+                        'id': unique_id
+                    })
+                    if debug:
+                        print(f"DEBUG:   Basic Land Parsed: '{basename_no_ext}' -> Type: {land_type}, Set: {set_code}, Path: {filepath}")
+                
+                # Always add to normalized map
+                normalized_filename_key = normalize_card_name(basename_no_ext)
+                if normalized_filename_key not in normalized_file_map:
+                    normalized_file_map[normalized_filename_key] = img_source
+                elif debug:
+                    print(f"DEBUG:     WARNING: Normalized key '{normalized_filename_key}' from '{os.path.basename(filepath)}' conflicts. Using first found.")
+    
+    return normalized_file_map, basic_land_details
+
 # --- START: Cameo PDF Generation Code (Adapted from utilities.py and layouts.json) ---
 
 # Embedded layouts.json content
-# Extracted from the provided layouts.json file
 LAYOUTS_DATA: Dict[str, Any] = {
     "paper_layouts": {
         "letter": {
-            "width": 3300, # Native pixels, assume 300 DPI for these values
+            "width": 3300,
             "height": 2550,
             "card_layouts": {
-                "standard": { # MTG card size
-                    "width": 742, # Native pixels for card on page
+                "standard": {
+                    "width": 742,
                     "height": 1036,
-                    "x_pos": [141, 900, 1658, 2417], # 4 cols in create_pdf.py's letter_standard_v3
-                    "y_pos": [232, 1282],            # 2 rows in create_pdf.py's letter_standard_v3
+                    "x_pos": [141, 900, 1658, 2417],
+                    "y_pos": [232, 1282],
                     "template": "letter_standard_v3"
                 },
-                "japanese": { # Example, not primary target for MTG
+                "japanese": {
                     "width": 694, "height": 1015,
                     "x_pos": [165, 924, 1682, 2441], "y_pos": [243, 1293],
                     "template": "letter_japanese_v1"
                 },
             }
         },
-        "a4": { # Example for completeness, if MtgDeck2Print adds A4 support
+        "a4": {
             "width": 3508, "height": 2480,
             "card_layouts": {
                 "standard": {
@@ -65,11 +336,11 @@ LAYOUTS_DATA: Dict[str, Any] = {
     }
 }
 
-class CameoPaperSize: # Simplified enum style
+class CameoPaperSize:
     LETTER = "letter"
     A4 = "a4"
 
-class CameoCardSize: # Simplified enum style
+class CameoCardSize:
     STANDARD = "standard"
     JAPANESE = "japanese"
 
@@ -77,17 +348,15 @@ def parse_basic_land_filename(filename: str) -> Optional[Tuple[str, str, str]]:
     """
     Parses a basic land filename like 'Forest-avr-242.png' or 'Island-ZEN-123b.png'.
     Returns (land_type, set_code, unique_part) or None if not a match.
-    Assumes basic land names are in BASIC_LAND_NAMES.
     """
     basename_no_ext = os.path.splitext(os.path.basename(filename))[0]
     parts = basename_no_ext.split('-')
     
-    if len(parts) >= 3: # Expect at least Type-Set-Unique
+    if len(parts) >= 3:
         land_type_candidate = parts[0].lower()
         if land_type_candidate in BASIC_LAND_NAMES:
             set_code = parts[1].lower()
-            # The rest is considered the unique part, even if it contains more hyphens
-            unique_part = "-".join(parts[2:]) 
+            unique_part = "-".join(parts[2:])
             return land_type_candidate, set_code, unique_part
     return None
 
@@ -113,103 +382,60 @@ def calculate_max_print_bleed_cameo(x_pos: List[int], y_pos: List[int], width: i
     
     return min(x_border_max, y_border_max) + 1
 
-
-# --- MtgDeck2Print.py (Relevant Cameo PDF functions) ---
-
-# ... (previous Cameo helper functions like calculate_max_print_bleed_cameo) ...
-
 def draw_card_with_border_cameo(
-    card_image: Image.Image, 
-    base_image: Image.Image, 
-    box: tuple[int, int, int, int], 
+    card_image: Image.Image,
+    base_image: Image.Image,
+    box: tuple[int, int, int, int],
     print_bleed: int,
-    cell_bg_color_pil: Union[str, Tuple[int, int, int], None] # NEW ARGUMENT
+    cell_bg_color_pil: Union[str, Tuple[int, int, int], None]
 ):
     origin_x, origin_y, origin_width, origin_height = box
 
-    # --- NEW: Draw cell background first ---
     if cell_bg_color_pil is not None:
-        # The cell background should cover the entire area of the card slot,
-        # including the bleed area that will be drawn.
-        # The largest extent of the bleed will be print_bleed pixels outwards from origin_width/height.
-        # So, the cell rect starts at (origin_x - print_bleed, origin_y - print_bleed)
-        # and has dimensions (origin_width + 2*print_bleed, origin_height + 2*print_bleed)
-        # However, draw_card_with_border_cameo is called with `box` representing the card *without* bleed.
-        # The bleed is added iteratively *inside* this function.
-        # The cell background should be drawn *behind* the largest bleed iteration.
-        # The largest bleed will extend `print_bleed-1` pixels beyond the `box`.
-        # So the cell background should be at (origin_x - (print_bleed-1), origin_y - (print_bleed-1))
-        # with size (origin_width + 2*(print_bleed-1), origin_height + 2*(print_bleed-1))
-        # A simpler approach matching ReportLab: The cell_bg is for the card's final footprint.
-        # The bleed is an extension of the card image itself.
-        # So, the cell background is just the `box` dimensions.
-        # Let's draw the cell background to match the card's final dimensions (box)
-        # before any bleed is applied to the card image itself.
-        
-        # The cell background should be drawn based on the slot for the card,
-        # not just the card image if it's smaller.
-        # `box` defines where the card *image* (potentially resized) goes.
-        # The underlying cell can be considered to be this box.
-        
         draw = ImageDraw.Draw(base_image)
-        # The cell background covers the area defined by 'box' arguments.
-        # The bleed borders are drawn on top of this.
-        cell_rect_x0 = origin_x
-        cell_rect_y0 = origin_y
-        cell_rect_x1 = origin_x + origin_width
-        cell_rect_y1 = origin_y + origin_height
         
-        # If print_bleed is > 0, the card will be drawn slightly outside this 'box'
-        # The cell background should cover the full extent of the card including bleed.
-        # The largest image drawn will be (origin_width + 2*(print_bleed-1)), (origin_height + 2*(print_bleed-1))
-        # and pasted at (origin_x - (print_bleed-1)), (origin_y - (print_bleed-1))
-        if print_bleed > 0: # If there's bleed, expand the cell background
-            # We need to be careful here. The `box` is where the card *content* (sans bleed) is placed.
-            # The bleed extends outwards from this. So the cell background should cover
-            # the `box` plus the maximum bleed extent.
-            # The `print_bleed` value here represents iterations.
-            # The largest offset is `print_bleed - 1` if `print_bleed > 0`.
-            max_offset = print_bleed -1 if print_bleed > 0 else 0
+        if print_bleed > 0:
+            max_offset = print_bleed - 1 if print_bleed > 0 else 0
             cell_rect_x0 = origin_x - max_offset
             cell_rect_y0 = origin_y - max_offset
             cell_rect_x1 = origin_x + origin_width + max_offset
             cell_rect_y1 = origin_y + origin_height + max_offset
+        else:
+            cell_rect_x0 = origin_x
+            cell_rect_y0 = origin_y
+            cell_rect_x1 = origin_x + origin_width
+            cell_rect_y1 = origin_y + origin_height
 
         draw.rectangle(
             [cell_rect_x0, cell_rect_y0, cell_rect_x1, cell_rect_y1],
             fill=cell_bg_color_pil
         )
-    # --- END NEW ---
 
-    for i in reversed(range(print_bleed)): # Iterates from largest bleed to smallest (actual card image)
-        # card_image is the *original* card (after source cropping/extend_corners)
-        # It gets resized here for each bleed iteration
+    for i in reversed(range(print_bleed)):
         card_image_resized_for_this_iteration = card_image.resize(
-            (origin_width + (2 * i), origin_height + (2 * i)) # No explicit filter
+            (origin_width + (2 * i), origin_height + (2 * i))
         )
-        # Paste location is shifted outward by 'i' to center the bleed growth relative to the original box
         paste_pos_x = origin_x - i
         paste_pos_y = origin_y - i
         
         base_image.paste(
-            card_image_resized_for_this_iteration, 
-            (paste_pos_x, paste_pos_y), 
+            card_image_resized_for_this_iteration,
+            (paste_pos_x, paste_pos_y),
             card_image_resized_for_this_iteration if card_image_resized_for_this_iteration.mode == 'RGBA' else None
         )
 
-
 def draw_card_layout_cameo(
-    card_images: List[Image.Image], 
-    base_image: Image.Image, 
-    num_rows: int, num_cols: int, 
-    x_pos_layout: List[int], y_pos_layout: List[int], 
-    card_width_layout: int, card_height_layout: int, 
+    card_images: List[Image.Image],
+    base_image: Image.Image,
+    num_rows: int, num_cols: int,
+    x_pos_layout: List[int], y_pos_layout: List[int],
+    card_width_layout: int, card_height_layout: int,
     print_bleed_layout_units: int,
     crop_percentage: float,
     ppi_ratio: float,
     extend_corners_src_px: int,
     flip: bool,
-    cell_bg_color_pil: Union[str, Tuple[int, int, int], None] # NEW ARGUMENT
+    cell_bg_color_pil: Union[str, Tuple[int, int, int], None]
 ):
     num_slots_on_page = num_rows * num_cols
 
@@ -219,7 +445,6 @@ def draw_card_layout_cameo(
         slot_x_on_page_scaled = math.floor(x_pos_layout[i % num_cols] * ppi_ratio)
         slot_y_on_page_scaled = math.floor(y_pos_layout[i // num_cols] * ppi_ratio)
         
-        # ... (cropping and extend_corners logic for current_card_image remains the same) ...
         if crop_percentage > 0:
             card_w, card_h = current_card_image.size
             crop_w_px = math.floor(card_w / 2 * (crop_percentage / 100.0))
@@ -228,8 +453,8 @@ def draw_card_layout_cameo(
 
         if extend_corners_src_px > 0:
             current_card_image = current_card_image.crop((
-                extend_corners_src_px, extend_corners_src_px, 
-                current_card_image.width - extend_corners_src_px, 
+                extend_corners_src_px, extend_corners_src_px,
+                current_card_image.width - extend_corners_src_px,
                 current_card_image.height - extend_corners_src_px
             ))
         
@@ -237,28 +462,25 @@ def draw_card_layout_cameo(
         card_render_width_scaled = math.floor(card_width_layout * ppi_ratio) - (2 * extend_corners_page_px_scaled)
         card_render_height_scaled = math.floor(card_height_layout * ppi_ratio) - (2 * extend_corners_page_px_scaled)
 
-        # This 'paste_box' is where the card *content* (scaled, after source cropping) will be drawn.
-        # The bleed borders extend outwards from this box.
         paste_box_for_card_content = (
-            slot_x_on_page_scaled + extend_corners_page_px_scaled, 
-            slot_y_on_page_scaled + extend_corners_page_px_scaled, 
-            card_render_width_scaled, 
+            slot_x_on_page_scaled + extend_corners_page_px_scaled,
+            slot_y_on_page_scaled + extend_corners_page_px_scaled,
+            card_render_width_scaled,
             card_render_height_scaled
         )
 
-        # This is the number of bleed border iterations.
         final_print_bleed_iterations = math.ceil(print_bleed_layout_units * ppi_ratio) + extend_corners_page_px_scaled
         
         draw_card_with_border_cameo(
-            current_card_image, # This is the card image *after* source cropping
+            current_card_image,
             base_image,
-            paste_box_for_card_content, # Defines the core card content area
-            final_print_bleed_iterations, # Number of 1px bleed borders to add
-            cell_bg_color_pil # Pass the color
+            paste_box_for_card_content,
+            final_print_bleed_iterations,
+            cell_bg_color_pil
         )
 
 def create_pdf_cameo_style(
-    image_files: List[str],
+    image_sources: List[ImageSource],  # Changed from image_files to image_sources
     output_pdf_file: str,
     paper_type_arg: str,
     target_dpi: int,
@@ -266,32 +488,29 @@ def create_pdf_cameo_style(
     pdf_name_label: Optional[str],
     debug: bool = False
 ):
-    # ... (initial prints and setup as before) ...
     print(f"\n--- Cameo PDF Generation (PIL-based) ---")
     print(f"Output file: {output_pdf_file}")
-    # NEW: Print cell bg color if not default
-    default_cell_bg_color = "black" # Assuming this was the implicit default
+    
+    default_cell_bg_color = "black"
     if image_cell_bg_color_str.lower() != default_cell_bg_color:
         print(f"  Image Cell Background Color: {image_cell_bg_color_str}")
 
     cameo_paper_key: str
     if paper_type_arg.lower() == "letter":
         cameo_paper_key = CameoPaperSize.LETTER
-    elif paper_type_arg.lower() == "a4": # If MtgDeck2Print were to support A4
+    elif paper_type_arg.lower() == "a4":
         cameo_paper_key = CameoPaperSize.A4
     else:
-        print(f"Error: --cameo PDF generation: Paper type '{paper_type_arg}' is not directly supported by embedded cameo layouts (which includes 'letter', 'a4').")
-        if paper_type_arg.lower() == "legal":
-             print(f"       Note: The 'legal' paper size is not defined in the source layouts.json used as a model for cameo mode.")
+        print(f"Error: --cameo PDF generation: Paper type '{paper_type_arg}' is not directly supported by embedded cameo layouts.")
         return
     
-    cameo_card_key = CameoCardSize.STANDARD # MTG cards use "standard" layout size
+    cameo_card_key = CameoCardSize.STANDARD
 
     try:
         paper_layout_config = LAYOUTS_DATA["paper_layouts"][cameo_paper_key]
         card_layout_config = paper_layout_config["card_layouts"][cameo_card_key]
     except KeyError:
-        print(f"Error: Layout for paper '{cameo_paper_key}' and card size '{cameo_card_key}' not found in embedded layouts.")
+        print(f"Error: Layout for paper '{cameo_paper_key}' and card size '{cameo_card_key}' not found.")
         return
 
     num_rows = len(card_layout_config["y_pos"])
@@ -313,82 +532,60 @@ def create_pdf_cameo_style(
 
     if debug:
         print(f"DEBUG CAMEO: Paper Key: {cameo_paper_key}, Card Key: {cameo_card_key}")
-        print(f"DEBUG CAMEO: Layout Page Dim (WxH @{layout_base_ppi}PPI): {paper_layout_config['width']}x{paper_layout_config['height']}")
-        print(f"DEBUG CAMEO: Target DPI: {target_dpi}, PPI Ratio: {ppi_ratio:.4f}")
-        print(f"DEBUG CAMEO: Output Page Dim (WxH @{target_dpi}PPI): {page_width_px_scaled}x{page_height_px_scaled}")
-        print(f"DEBUG CAMEO: Layout Card Slot Dim (WxH @{layout_base_ppi}PPI): {card_slot_width_layout}x{card_slot_height_layout}")
         print(f"DEBUG CAMEO: Grid: {num_cols}x{num_rows} ({num_cards_per_page} cards/page)")
-        print(f"DEBUG CAMEO: Max Print Bleed (layout units): {max_print_bleed_layout_units}")
 
-    # --- START: NEW - Attempt to load registration mark image ---
+    # Load registration mark
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    # Assumes 'assets' is a subdirectory in the same location as MtgDeck2Print.py
-    asset_dir_cameo = os.path.join(script_dir, "assets") 
-    registration_filename = f'{cameo_paper_key}_registration.jpg' # e.g., letter_registration.jpg or a4_registration.jpg
+    asset_dir_cameo = os.path.join(script_dir, "assets")
+    registration_filename = f'{cameo_paper_key}_registration.jpg'
     registration_path = os.path.join(asset_dir_cameo, registration_filename)
     
     master_page_background: Optional[Image.Image] = None
     if os.path.exists(registration_path):
         try:
             reg_im_original = Image.open(registration_path)
-            # The registration image from utilities.py is designed for paper_layout_config width/height at layout_base_ppi (300).
-            # We need to scale it to the target_dpi for our output page.
-            reg_im_scaled = reg_im_original.resize((page_width_px_scaled, page_height_px_scaled)) # No explicit filter, matches utilities.py
-            
-            # Ensure the image is RGB for PDF saving, as registration marks are typically color/grayscale.
+            reg_im_scaled = reg_im_original.resize((page_width_px_scaled, page_height_px_scaled))
             if reg_im_scaled.mode != 'RGB':
-                if reg_im_scaled.mode == 'L' or reg_im_scaled.mode == 'P': # Grayscale or Palette
-                    reg_im_scaled = reg_im_scaled.convert('RGB')
-                elif reg_im_scaled.mode == 'RGBA': # Has alpha (e.g. if a PNG registration mark was used)
-                    # Create an RGB canvas and paste RGBA image onto it, effectively flattening alpha
-                    rgb_canvas = Image.new("RGB", reg_im_scaled.size, "white") # Assume white for transparent parts
-                    rgb_canvas.paste(reg_im_scaled, mask=reg_im_scaled.split()[3]) # Paste using alpha channel as mask
-                    reg_im_scaled = rgb_canvas
-                # Add other mode conversions if necessary, though JPGs are usually L or RGB.
-            
+                reg_im_scaled = reg_im_scaled.convert('RGB')
             master_page_background = reg_im_scaled
-            if debug: print(f"DEBUG CAMEO: Loaded and scaled registration mark image: {registration_path}")
+            if debug: print(f"DEBUG CAMEO: Loaded registration mark: {registration_path}")
         except Exception as e_reg:
-            print(f"  Warning (Cameo): Could not load/process registration image '{registration_path}': {e_reg}. Falling back to white page background.")
-    else:
-        print(f"  Warning (Cameo): Registration mark image not found at '{registration_path}'. PDF pages will have a white background. For Cameo registration marks, ensure an 'assets' subdirectory exists next to the script, containing '{registration_filename}'.")
+            print(f"  Warning: Could not load registration image: {e_reg}")
 
-    if master_page_background is None: # Fallback if registration image failed to load
+    if master_page_background is None:
         master_page_background = Image.new("RGB", (page_width_px_scaled, page_height_px_scaled), "white")
-    # --- END: NEW - Attempt to load registration mark image ---
 
     pil_cell_bg_color: Union[str, Tuple[int,int,int], None] = image_cell_bg_color_str
     
     all_pil_pages: List[Image.Image] = []
-    total_images_to_process = len(image_files)
+    total_images_to_process = len(image_sources)
 
     for page_start_index in range(0, total_images_to_process, num_cards_per_page):
-        # --- MODIFIED: Use master_page_background ---
-        current_page_pil_image = master_page_background.copy() 
+        current_page_pil_image = master_page_background.copy()
 
-        image_paths_for_this_page = image_files[page_start_index : page_start_index + num_cards_per_page]
+        image_sources_for_this_page = image_sources[page_start_index : page_start_index + num_cards_per_page]
         pil_card_images_for_page: List[Image.Image] = []
-        for img_path in image_paths_for_this_page:
+        
+        for img_source in image_sources_for_this_page:
             try:
-                img = Image.open(img_path)
-                img = img.convert('RGBA') # Ensure RGBA for consistent alpha handling for card paste
-                pil_card_images_for_page.append(img)
+                # Get local path (downloads if needed)
+                local_path = img_source.get_local_path(debug)
+                if local_path:
+                    img = Image.open(local_path)
+                    img = img.convert('RGBA')
+                    pil_card_images_for_page.append(img)
+                else:
+                    raise Exception("Failed to get local path")
             except Exception as e:
-                print(f"  Warning (Cameo): Could not open/process image '{img_path}': {e}")
-                placeholder_w = int(TARGET_IMG_WIDTH_INCHES * target_dpi) 
+                print(f"  Warning: Could not process image '{img_source.original}': {e}")
+                placeholder_w = int(TARGET_IMG_WIDTH_INCHES * target_dpi)
                 placeholder_h = int(TARGET_IMG_HEIGHT_INCHES * target_dpi)
                 placeholder = Image.new("RGBA", (placeholder_w, placeholder_h), (255, 192, 203, 255))
                 draw_placeholder = ImageDraw.Draw(placeholder)
-                # --- MODIFIED: More robust font loading for placeholder text ---
                 try:
-                    # Attempt to use a slightly more visible default font if possible
-                    font_placeholder: Union[ImageFont.FreeTypeFont, ImageFont.ImageFont]
-                    try: font_placeholder = ImageFont.truetype("arial.ttf", 15) # Small fixed size
-                    except IOError: 
-                        try: font_placeholder = ImageFont.truetype("DejaVuSans.ttf", 15)
-                        except IOError: font_placeholder = ImageFont.load_default() 
+                    font_placeholder = ImageFont.load_default()
                     draw_placeholder.text((5,5), "Error\nLoading", fill="black", font=font_placeholder)
-                except Exception: # Fallback if any font loading fails
+                except:
                     draw_placeholder.text((5,5), "Error", fill="black")
                 pil_card_images_for_page.append(placeholder)
         
@@ -406,39 +603,28 @@ def create_pdf_cameo_style(
             ppi_ratio=ppi_ratio,
             extend_corners_src_px=extend_corners_on_source_px,
             flip=False,
-            cell_bg_color_pil=pil_cell_bg_color # PASS THE NEW ARGUMENT
+            cell_bg_color_pil=pil_cell_bg_color
         )
         
         page_num_for_label = (page_start_index // num_cards_per_page) + 1
-
         template_name = card_layout_config.get("template", "unknown_template")
-
-        # --- MODIFIED: Construct label_text with pdf_name_label ---
+        
         base_label_part = f"template: {template_name}, sheet: {page_num_for_label}"
-        if pdf_name_label: # If a name is provided
+        if pdf_name_label:
             label_text = f"name: {pdf_name_label}, {base_label_part}"
         else:
             label_text = base_label_part
-        # --- END MODIFICATION ---
 
         try:
             draw_page_text = ImageDraw.Draw(current_page_pil_image)
             text_x_pos = math.floor((paper_layout_config["width"] - 180) * ppi_ratio)
             text_y_pos = math.floor((paper_layout_config["height"] - 180) * ppi_ratio)
-            font_size_scaled = math.floor(40 * ppi_ratio) # Original was 40pt font @300DPI scale
+            font_size_scaled = math.floor(40 * ppi_ratio)
             
-            page_font: Union[ImageFont.FreeTypeFont, ImageFont.ImageFont]
-            try: 
-                page_font = ImageFont.truetype("arial.ttf", font_size_scaled)
-            except IOError:
-                try:
-                    page_font = ImageFont.truetype("DejaVuSans.ttf", font_size_scaled)
-                except IOError:
-                    # --- MODIFIED: Try load_default with size if available (Pillow >= 9.2.0) ---
-                    try:
-                        page_font = ImageFont.load_default(size=font_size_scaled) 
-                    except AttributeError: # Older Pillow: load_default() has no size param
-                        page_font = ImageFont.load_default() 
+            try:
+                page_font = ImageFont.load_default(size=font_size_scaled)
+            except:
+                page_font = ImageFont.load_default()
             
             draw_page_text.text((text_x_pos, text_y_pos), label_text, fill=(0,0,0), anchor="ra", font=page_font)
         except Exception as e_font:
@@ -447,7 +633,7 @@ def create_pdf_cameo_style(
         all_pil_pages.append(current_page_pil_image)
 
     if not all_pil_pages:
-        print("Cameo PDF: No pages generated (no images provided or all failed to load).") # Slight wording adjustment
+        print("Cameo PDF: No pages generated.")
         return
 
     try:
@@ -456,8 +642,8 @@ def create_pdf_cameo_style(
             format='PDF',
             save_all=True,
             append_images=all_pil_pages[1:],
-            resolution=float(target_dpi), 
-            quality=pdf_save_quality      
+            resolution=float(target_dpi),
+            quality=pdf_save_quality
         )
         print(f"Cameo PDF generation successful: {output_pdf_file} ({len(all_pil_pages)} page(s))")
     except Exception as e:
@@ -465,79 +651,41 @@ def create_pdf_cameo_style(
 
 # --- END: Cameo PDF Generation Code ---
 
-
 def normalize_card_name(name: str) -> str:
     name = name.lower().strip()
     normalized_name = unicodedata.normalize('NFKD', name).encode('ascii', 'ignore').decode('ascii')
-    normalized_name = re.sub(r"[',\-\.:()\[\]\s_]", "", normalized_name) 
+    normalized_name = re.sub(r"[',\-\.:()\[\]\s_]", "", normalized_name)
     normalized_name = re.sub(r"[^a-z0-9]", "", normalized_name)
-    return normalized_name.strip() 
+    return normalized_name.strip()
 
 def find_image_in_map(
-    deck_card_name_original: str, 
-    normalized_file_map: Dict[str, str] 
-) -> Optional[str]:
+    deck_card_name_original: str,
+    normalized_file_map: Dict[str, ImageSource]  # Changed to ImageSource
+) -> Optional[ImageSource]:
     normalized_deck_card_name = normalize_card_name(deck_card_name_original)
     if normalized_deck_card_name in normalized_file_map:
         return normalized_file_map[normalized_deck_card_name]
     return None
 
-# Modified process_deck_list
-
 def process_deck_list(
     deck_list_path: str,
-    png_dir: str,
+    normalized_file_map: Dict[str, ImageSource],  # Changed to ImageSource
+    basic_land_details: Dict[str, List[Dict[str, Any]]],  # Changed to include ImageSource
     skip_basic_land: bool,
-    basic_land_sets_filter: Optional[List[str]], # NEW ARGUMENT
+    basic_land_sets_filter: Optional[List[str]],
     debug: bool = False
-) -> Tuple[List[str], List[str]]:
-    images_to_print: List[str] = []
+) -> Tuple[List[ImageSource], List[str]]:  # Changed return type
+    images_to_print: List[ImageSource] = []
     missing_card_names: List[str] = []
     skipped_basic_lands_count: Dict[str, int] = {}
 
-    # --- Data structures for card images ---
-    # For non-basic lands (and as a fallback for basics if parsing fails)
-    normalized_file_map: Dict[str, str] = {} 
-    # For basic lands: Dict[land_type, List[Dict{'set': str, 'path': str, 'id': str}]]
-    basic_land_details: Dict[str, List[Dict[str, str]]] = defaultdict(list)
-
     if debug:
-        print(f"DEBUG: Scanning PNG directory '{png_dir}' for PNGs...")
-        print("DEBUG: --- Building Normalized Filename Map & Basic Land Details ---")
+        print(f"DEBUG: Processing deck list from '{deck_list_path}'")
         if basic_land_sets_filter:
             print(f"DEBUG: Basic land set filter active: {basic_land_sets_filter}")
 
-    for ext in ("*.png", "*.PNG"):
-        for filepath in glob.glob(os.path.join(png_dir, ext)):
-            basename_no_ext = os.path.splitext(os.path.basename(filepath))[0]
-            
-            # Attempt to parse as basic land first
-            parsed_basic = parse_basic_land_filename(basename_no_ext)
-            if parsed_basic:
-                land_type, set_code, unique_id = parsed_basic
-                basic_land_details[land_type].append({
-                    'set': set_code, 
-                    'path': filepath, 
-                    'id': unique_id # For ensuring uniqueness if needed later
-                })
-                if debug:
-                    print(f"DEBUG:   Basic Land Parsed: '{basename_no_ext}' -> Type: {land_type}, Set: {set_code}, Path: {filepath}")
-            
-            # Always add to the normalized_file_map for general lookup
-            # This map is used for non-basics and as a fallback if basic land special handling fails.
-            normalized_filename_key = normalize_card_name(basename_no_ext)
-            if debug and not parsed_basic: # Only print general mapping if not already printed as basic
-                print(f"DEBUG:   Non-Basic/Other: '{basename_no_ext}' => Normalized Key: '{normalized_filename_key}' (Path: {filepath})")
-            
-            if normalized_filename_key not in normalized_file_map:
-                normalized_file_map[normalized_filename_key] = filepath
-            elif debug:
-                print(f"DEBUG:     WARNING: Normalized key '{normalized_filename_key}' from '{os.path.basename(filepath)}' conflicts. Using first found.")
-
-    if debug: print("DEBUG: --- Finished Building Maps ---")
-
     if not normalized_file_map and not basic_land_details and not skip_basic_land:
-        print(f"  No PNG files found in '{png_dir}' or maps are empty. Cannot process deck list if not skipping basics.")
+        print(f"  No images found in source. Cannot process deck list if not skipping basics.")
 
     try:
         with open(deck_list_path, 'r', encoding='utf-8') as f:
@@ -547,109 +695,98 @@ def process_deck_list(
                 
                 parts = line.split(maxsplit=1)
                 if len(parts) != 2:
-                    print(f"  Warning: Skipping malformed line {line_num}: '{line}'"); missing_card_names.append(line); continue
+                    print(f"  Warning: Skipping malformed line {line_num}: '{line}'")
+                    missing_card_names.append(line)
+                    continue
                 
                 count_str, deck_card_name_original = parts
                 try:
                     count = int(count_str)
                 except ValueError:
-                    print(f"  Warning: Invalid count line {line_num}: '{line}'"); missing_card_names.append(deck_card_name_original); continue
+                    print(f"  Warning: Invalid count line {line_num}: '{line}'")
+                    missing_card_names.append(deck_card_name_original)
+                    continue
                 if count <= 0:
-                    print(f"  Warning: Non-positive count line {line_num}: '{line}'"); continue
+                    print(f"  Warning: Non-positive count line {line_num}: '{line}'")
+                    continue
 
                 normalized_deck_card_name = normalize_card_name(deck_card_name_original)
 
-                # --- Handle Basic Lands with new logic OR Skip ---
+                # Handle Basic Lands
                 if normalized_deck_card_name in BASIC_LAND_NAMES:
                     if skip_basic_land:
-                        if debug: print(f"DEBUG: Skipping basic land due to --skip-basic-land: {count}x '{deck_card_name_original}'")
+                        if debug: print(f"DEBUG: Skipping basic land: {count}x '{deck_card_name_original}'")
                         skipped_basic_lands_count[deck_card_name_original] = skipped_basic_lands_count.get(deck_card_name_original, 0) + count
                         continue
                     
-                    # --- New Basic Land Selection Logic ---
-                    if debug: print(f"DEBUG: Processing basic land: {count}x '{deck_card_name_original}' (Normalized: {normalized_deck_card_name})")
+                    if debug: print(f"DEBUG: Processing basic land: {count}x '{deck_card_name_original}'")
                     
                     available_basics_for_type = basic_land_details.get(normalized_deck_card_name, [])
                     if not available_basics_for_type:
-                        print(f"  NOT FOUND (Basic Land): No images found for type '{deck_card_name_original}' in `basic_land_details` map.")
-                        # Try fallback to general map just in case it wasn't parsed correctly but exists
-                        found_path_fallback = find_image_in_map(deck_card_name_original, normalized_file_map)
-                        if found_path_fallback:
-                            if debug: print(f"DEBUG:   Found basic land '{deck_card_name_original}' via fallback map. Using {count} copies of '{os.path.basename(found_path_fallback)}'.")
-                            images_to_print.extend([found_path_fallback] * count)
+                        print(f"  NOT FOUND (Basic Land): No images for type '{deck_card_name_original}'")
+                        # Try fallback to general map
+                        found_source_fallback = find_image_in_map(deck_card_name_original, normalized_file_map)
+                        if found_source_fallback:
+                            if debug: print(f"DEBUG:   Found basic land via fallback map")
+                            images_to_print.extend([found_source_fallback] * count)
                         else:
                             missing_card_names.append(f"{count}x {deck_card_name_original} (Basic Land Type Not Found)")
                         continue
 
-                    # Filter by set if basic_land_sets_filter is provided
+                    # Filter by set if needed
                     candidate_pool = []
                     if basic_land_sets_filter:
                         for basic_info in available_basics_for_type:
                             if basic_info['set'] in basic_land_sets_filter:
-                                candidate_pool.append(basic_info['path'])
-                        if debug: print(f"DEBUG:   Filtered by set(s) {basic_land_sets_filter}. Candidates for '{normalized_deck_card_name}': {len(candidate_pool)}")
+                                candidate_pool.append(basic_info['source'])
+                        if debug: print(f"DEBUG:   Filtered by set(s) {basic_land_sets_filter}. Candidates: {len(candidate_pool)}")
                         if not candidate_pool:
-                            print(f"  NOT FOUND (Basic Land): No '{deck_card_name_original}' found matching sets: {basic_land_sets_filter}")
+                            print(f"  NOT FOUND (Basic Land): No '{deck_card_name_original}' matching sets: {basic_land_sets_filter}")
                             missing_card_names.append(f"{count}x {deck_card_name_original} (Set Mismatch: {basic_land_sets_filter})")
                             continue
-                    else: # No set filter, use all available for this type
-                        candidate_pool = [b['path'] for b in available_basics_for_type]
-                        if debug: print(f"DEBUG:   No set filter. Candidates for '{normalized_deck_card_name}': {len(candidate_pool)}")
+                    else:
+                        candidate_pool = [b['source'] for b in available_basics_for_type]
+                        if debug: print(f"DEBUG:   No set filter. Candidates: {len(candidate_pool)}")
 
-                    if not candidate_pool: # Should be caught above, but as a safeguard
-                        print(f"  NOT FOUND (Basic Land): No candidate pool for '{deck_card_name_original}' after processing.")
-                        missing_card_names.append(f"{count}x {deck_card_name_original} (No Candidates)")
-                        continue
-                    
-                    # Now select 'count' images from candidate_pool
-                    selected_paths_for_this_basic = []
+                    # Select 'count' images from candidate_pool
+                    selected_sources_for_this_basic = []
                     num_unique_candidates = len(candidate_pool)
 
                     if count <= num_unique_candidates:
-                        # Enough unique images, select 'count' without replacement
-                        selected_paths_for_this_basic = random.sample(candidate_pool, count)
-                        if debug: print(f"DEBUG:   Selected {count} unique basic lands for '{deck_card_name_original}' from {num_unique_candidates} candidates.")
+                        selected_sources_for_this_basic = random.sample(candidate_pool, count)
+                        if debug: print(f"DEBUG:   Selected {count} unique basic lands")
                     else:
-                        # Not enough unique images, take all unique then add duplicates
-                        selected_paths_for_this_basic.extend(candidate_pool) # Add all unique ones first
+                        selected_sources_for_this_basic.extend(candidate_pool)
                         remaining_needed = count - num_unique_candidates
-                        # Randomly pick with replacement for the remainder
                         duplicates_to_add = random.choices(candidate_pool, k=remaining_needed)
-                        selected_paths_for_this_basic.extend(duplicates_to_add)
-                        if debug: print(f"DEBUG:   Selected all {num_unique_candidates} unique lands for '{deck_card_name_original}', plus {remaining_needed} duplicates.")
+                        selected_sources_for_this_basic.extend(duplicates_to_add)
+                        if debug: print(f"DEBUG:   Selected all {num_unique_candidates} unique + {remaining_needed} duplicates")
                     
-                    images_to_print.extend(selected_paths_for_this_basic)
-                    if debug:
-                        for pth_idx, pth in enumerate(selected_paths_for_this_basic):
-                            print(f"DEBUG:     -> Basic Land {pth_idx+1}: {os.path.basename(pth)}")
-                    continue # End of basic land specific handling
+                    images_to_print.extend(selected_sources_for_this_basic)
+                    continue
 
-                # --- Handle Non-Basic Lands (Original Logic) ---
-                if debug: print(f"DEBUG: Attempting to find (non-basic): '{deck_card_name_original}' (Normalized: '{normalized_deck_card_name}')")
-                found_path = find_image_in_map(deck_card_name_original, normalized_file_map)
-                if found_path:
-                    images_to_print.extend([found_path] * count)
-                    if debug: print(f"DEBUG:   FOUND (non-basic): {count}x '{deck_card_name_original}' as '{os.path.basename(found_path)}'")
+                # Handle Non-Basic Lands
+                if debug: print(f"DEBUG: Finding non-basic: '{deck_card_name_original}'")
+                found_source = find_image_in_map(deck_card_name_original, normalized_file_map)
+                if found_source:
+                    images_to_print.extend([found_source] * count)
+                    if debug: print(f"DEBUG:   FOUND: {count}x '{deck_card_name_original}'")
                 else:
-                    print(f"  NOT FOUND (non-basic): {count}x '{deck_card_name_original}'")
-                    if debug and normalized_file_map:
-                        print("DEBUG:     Available normalized keys in map:"); [print(f"DEBUG:       - '{k}'") for k in sorted(normalized_file_map.keys())]
-                    elif debug: print("DEBUG:     Normalized file map is empty.")
-                    missing_card_names.append(deck_card_name_original) # Original name for non-basics
+                    print(f"  NOT FOUND: {count}x '{deck_card_name_original}'")
+                    missing_card_names.append(deck_card_name_original)
     
     except FileNotFoundError:
         print(f"Error: Deck list file not found: {deck_list_path}")
         return [], []
     
     if skipped_basic_lands_count:
-        print("  Skipped the following basic lands from deck list (due to --skip-basic-land):")
-        for name, num in skipped_basic_lands_count.items(): print(f"    - {num}x {name}")
+        print("  Skipped the following basic lands:")
+        for name, num in skipped_basic_lands_count.items():
+            print(f"    - {num}x {name}")
         
-    return images_to_print, list(set(missing_card_names)) # Ensure missing_card_names are unique
-
+    return images_to_print, list(set(missing_card_names))
 
 def write_missing_cards_file(deck_list_path: str, missing_cards: List[str]):
-    # ... (no changes)
     if not missing_cards: return
     deck_list_dir = os.path.dirname(deck_list_path)
     deck_list_basename_no_ext = os.path.splitext(os.path.basename(deck_list_path))[0]
@@ -663,7 +800,6 @@ def write_missing_cards_file(deck_list_path: str, missing_cards: List[str]):
     except IOError as e: print(f"Error writing missing cards file '{missing_filepath}': {e}")
 
 def parse_dimension_to_pixels(dim_str: str, dpi: int, default_unit_is_mm: bool = False) -> int:
-    # ... (no changes)
     dim_str = dim_str.lower().strip(); val_str = ""; unit_str = ""
     for char in dim_str:
         if char.isdigit() or char == '.': val_str += char
@@ -672,39 +808,39 @@ def parse_dimension_to_pixels(dim_str: str, dpi: int, default_unit_is_mm: bool =
     value = float(val_str)
     pixels = 0
     if unit_str == "in" or unit_str == "\"": pixels = value * dpi
-    elif unit_str == "mm": pixels = (value / 25.4) * dpi 
+    elif unit_str == "mm": pixels = (value / 25.4) * dpi
     elif unit_str == "px": pixels = value
     elif not unit_str and default_unit_is_mm: pixels = (value / 25.4) * dpi
     elif not unit_str: raise ValueError(f"Dimension '{dim_str}' lacks units (in, mm, px).")
     else: raise ValueError(f"Unknown unit '{unit_str}' in '{dim_str}'. Use in, mm, px.")
     return int(round(pixels))
 
-def parse_paper_type(size_str: str) -> str: 
-    # ... (no changes)
-    # Note: This validation is for MtgDeck2Print's own paper types ("letter", "legal").
-    # The cameo mode will do its own validation against LAYOUTS_DATA.
+def parse_paper_type(size_str: str) -> str:
     size_str = size_str.lower().strip()
-    if size_str not in PAPER_SIZES_PT: # PAPER_SIZES_PT is for ReportLab
-        # For cameo, we might allow other paper sizes if they are in LAYOUTS_DATA
-        # However, to keep this function generic for both PDF types, we only validate against known MtgDeck2Print types.
-        # The cameo function will then re-evaluate.
-        # A more robust solution might be to have separate validation or expand PAPER_SIZES_PT for cameo.
-        # For now, this is fine as cameo's create_pdf_cameo_style will error if 'legal' is passed.
-        # if size_str.lower() in LAYOUTS_DATA["paper_layouts"]: return size_str.lower() # Potentially allow more if for cameo
-        raise ValueError(f"Invalid paper type for ReportLab PDF: '{size_str}'. Supported ReportLab types: {', '.join(PAPER_SIZES_PT.keys())}. Cameo mode uses its own layout definitions.")
+    if size_str not in PAPER_SIZES_PT:
+        raise ValueError(f"Invalid paper type: '{size_str}'. Supported: {', '.join(PAPER_SIZES_PT.keys())}")
     return size_str
 
-def create_pdf_grid(*args, **kwargs): # Keep signature, but logic might be elided if focusing on PNG copy
-    # ... (Full ReportLab PDF generation logic as before) ...
-    # This function is unchanged and used when --cameo is NOT present.
-    image_files=kwargs.get("image_files")
-    output_pdf_file=kwargs.get("output_pdf_file")
-    paper_type_str=kwargs.get("paper_type_str")
-    # ... other kwargs ...
-
-    if not image_files: print("No image files for PDF."); return
+def create_pdf_grid(image_sources: List[ImageSource], **kwargs):  # Changed to ImageSource
+    output_pdf_file = kwargs.get("output_pdf_file")
+    paper_type_str = kwargs.get("paper_type_str")
     
-    # --- ReportLab PDF Setup ---
+    if not image_sources:
+        print("No images for PDF.")
+        return
+    
+    # Download all images first if needed
+    local_paths = []
+    for img_source in image_sources:
+        local_path = img_source.get_local_path(kwargs.get("debug", False))
+        if local_path:
+            local_paths.append(local_path)
+        else:
+            print(f"Warning: Could not get image from {img_source.original}")
+            # Add placeholder path
+            local_paths.append(None)
+    
+    # ReportLab PDF Setup
     paper_width_pt, paper_height_pt = PAPER_SIZES_PT[paper_type_str]
     c = canvas.Canvas(output_pdf_file, pagesize=(paper_width_pt, paper_height_pt))
     
@@ -727,7 +863,8 @@ def create_pdf_grid(*args, **kwargs): # Keep signature, but logic might be elide
     try:
         page_margin_px = parse_dimension_to_pixels(page_margin_str, dpi, default_unit_is_mm=True)
     except ValueError as e:
-        print(f"Error parsing page margin '{page_margin_str}': {e}. Using 0px."); page_margin_px = 0
+        print(f"Error parsing page margin '{page_margin_str}': {e}. Using 0px.")
+        page_margin_px = 0
     
     page_margin_pt = page_margin_px * (inch / dpi)
     img_spacing_pt = image_spacing_pixels * (inch / dpi)
@@ -735,27 +872,25 @@ def create_pdf_grid(*args, **kwargs): # Keep signature, but logic might be elide
     target_img_width_pt = TARGET_IMG_WIDTH_INCHES * inch
     target_img_height_pt = TARGET_IMG_HEIGHT_INCHES * inch
     
-    grid_cols, grid_rows = (3,3) if paper_type_str == "letter" else (3,4) # MtgDeck2Print's fixed grid
+    grid_cols, grid_rows = (3,3) if paper_type_str == "letter" else (3,4)
     
     print(f"  Grid: {grid_cols}x{grid_rows} cards per page.")
-    print(f"  Margins: {page_margin_str} ({page_margin_pt:.2f}pt), Image Spacing: {image_spacing_pixels}px ({img_spacing_pt:.2f}pt)")
+    print(f"  Margins: {page_margin_str} ({page_margin_pt:.2f}pt), Spacing: {image_spacing_pixels}px ({img_spacing_pt:.2f}pt)")
 
     available_width_pt = paper_width_pt - 2 * page_margin_pt
     available_height_pt = paper_height_pt - 2 * page_margin_pt
 
-    # Calculate total width/height needed by cards + spacing
     total_card_width_pt = grid_cols * target_img_width_pt + (grid_cols - 1) * img_spacing_pt
     total_card_height_pt = grid_rows * target_img_height_pt + (grid_rows - 1) * img_spacing_pt
     
-    # Center the grid: Calculate starting X, Y for the top-left card's bottom-left corner
     start_x_pt = page_margin_pt + (available_width_pt - total_card_width_pt) / 2
-    start_y_pt = paper_height_pt - page_margin_pt - (available_height_pt - total_card_height_pt) / 2 - target_img_height_pt # Start from top
+    start_y_pt = paper_height_pt - page_margin_pt - (available_height_pt - total_card_height_pt) / 2 - target_img_height_pt
 
     if total_card_width_pt > available_width_pt or total_card_height_pt > available_height_pt:
-        print("  Warning: Cards + spacing might exceed available page area with current margins.")
+        print("  Warning: Cards + spacing might exceed available page area.")
 
     images_per_page = grid_cols * grid_rows
-    total_images = len(image_files)
+    total_images = len(local_paths)
     num_pages = (total_images + images_per_page - 1) // images_per_page
     
     page_bg_color_rl = getattr(reportlab_colors, page_bg_color_str.lower(), reportlab_colors.white)
@@ -766,12 +901,12 @@ def create_pdf_grid(*args, **kwargs): # Keep signature, but logic might be elide
         cut_line_len_px = parse_dimension_to_pixels(cut_line_length_str, dpi, default_unit_is_mm=True)
         cut_line_len_pt = cut_line_len_px * (inch / dpi)
     except ValueError as e:
-        print(f"Error parsing cut line length '{cut_line_length_str}': {e}. Using 0px."); cut_line_len_pt = 0
-
+        print(f"Error parsing cut line length '{cut_line_length_str}': {e}. Using 0px.")
+        cut_line_len_pt = 0
 
     for page_num in range(num_pages):
         c.setFillColor(page_bg_color_rl)
-        c.rect(0, 0, paper_width_pt, paper_height_pt, fill=1, stroke=0) # Page background
+        c.rect(0, 0, paper_width_pt, paper_height_pt, fill=1, stroke=0)
 
         for i in range(images_per_page):
             img_idx = page_num * images_per_page + i
@@ -780,60 +915,50 @@ def create_pdf_grid(*args, **kwargs): # Keep signature, but logic might be elide
             row = i // grid_cols
             col = i % grid_cols
 
-            # Position for bottom-left of the image cell
             x = start_x_pt + col * (target_img_width_pt + img_spacing_pt)
-            y = start_y_pt - row * (target_img_height_pt + img_spacing_pt) # y decreases as row increases
+            y = start_y_pt - row * (target_img_height_pt + img_spacing_pt)
 
-            # Draw image cell background
+            # Draw cell background
             c.setFillColor(cell_bg_color_rl)
             c.rect(x, y, target_img_width_pt, target_img_height_pt, fill=1, stroke=0)
             
-            try:
-                # drawImage handles PNG transparency against the cell background
-                c.drawImage(image_files[img_idx], x, y, width=target_img_width_pt, height=target_img_height_pt, mask='auto')
-            except Exception as e:
-                print(f"  Warning: Could not draw image {image_files[img_idx]} on page {page_num+1}: {e}")
-                c.setFillColorRGB(1, 0, 0) # Red rectangle for error
-                c.rect(x, y, target_img_width_pt, target_img_height_pt, fill=1, stroke=0)
-                c.setFillColorRGB(0,0,0); c.drawCentredString(x + target_img_width_pt/2, y + target_img_height_pt/2, "Error")
-
+            if local_paths[img_idx]:
+                try:
+                    c.drawImage(local_paths[img_idx], x, y, width=target_img_width_pt, height=target_img_height_pt, mask='auto')
+                except Exception as e:
+                    print(f"  Warning: Could not draw image {img_idx} on page {page_num+1}: {e}")
+                    c.setFillColorRGB(1, 0, 0)
+                    c.rect(x, y, target_img_width_pt, target_img_height_pt, fill=1, stroke=0)
+                    c.setFillColorRGB(0,0,0)
+                    c.drawCentredString(x + target_img_width_pt/2, y + target_img_height_pt/2, "Error")
 
             if cut_lines and cut_line_len_pt > 0:
                 c.setStrokeColor(cut_line_color_rl)
                 c.setLineWidth(cut_line_width_pt)
-                # Top edge cut lines
-                c.line(x, y + target_img_height_pt, x - cut_line_len_pt, y + target_img_height_pt) # Left of top
-                c.line(x + target_img_width_pt, y + target_img_height_pt, x + target_img_width_pt + cut_line_len_pt, y + target_img_height_pt) # Right of top
-                # Bottom edge cut lines
-                c.line(x, y, x - cut_line_len_pt, y) # Left of bottom
-                c.line(x + target_img_width_pt, y, x + target_img_width_pt + cut_line_len_pt, y) # Right of bottom
-                # Left edge cut lines
-                c.line(x, y + target_img_height_pt, x, y + target_img_height_pt + cut_line_len_pt) # Top of left
-                c.line(x, y, x, y - cut_line_len_pt) # Bottom of left
-                # Right edge cut lines
-                c.line(x + target_img_width_pt, y + target_img_height_pt, x + target_img_width_pt, y + target_img_height_pt + cut_line_len_pt) # Top of right
-                c.line(x + target_img_width_pt, y, x + target_img_width_pt, y - cut_line_len_pt) # Bottom of right
+                # Draw cut lines
+                c.line(x, y + target_img_height_pt, x - cut_line_len_pt, y + target_img_height_pt)
+                c.line(x + target_img_width_pt, y + target_img_height_pt, x + target_img_width_pt + cut_line_len_pt, y + target_img_height_pt)
+                c.line(x, y, x - cut_line_len_pt, y)
+                c.line(x + target_img_width_pt, y, x + target_img_width_pt + cut_line_len_pt, y)
+                c.line(x, y + target_img_height_pt, x, y + target_img_height_pt + cut_line_len_pt)
+                c.line(x, y, x, y - cut_line_len_pt)
+                c.line(x + target_img_width_pt, y + target_img_height_pt, x + target_img_width_pt, y + target_img_height_pt + cut_line_len_pt)
+                c.line(x + target_img_width_pt, y, x + target_img_width_pt, y - cut_line_len_pt)
         
         c.showPage()
     c.save()
     print(f"ReportLab PDF generation complete: {output_pdf_file} ({num_pages} page(s))")
 
-
-def create_png_output(*args, **kwargs): # Keep signature
-    # ... (Full PNG grid generation logic as before, unchanged) ...
-    image_files=kwargs.get("image_files")
-    base_output_filename=kwargs.get("base_output_filename")
-    # (Assume the rest of this function is correctly implemented from previous versions)
-    print(f"PNG page generation complete for base: {base_output_filename} (Not fully re-implemented in this snippet)")
-
+def create_png_output(*args, **kwargs):
+    # This would need similar modifications to handle ImageSource
+    print(f"PNG page generation not fully implemented for web server mode")
 
 def copy_deck_pngs(
-    image_files_to_copy: List[str], # List of full source paths, with duplicates
+    image_sources: List[ImageSource],  # Changed from image_files to image_sources
     png_out_dir: str,
     debug: bool = False
 ):
-    # ... (This function remains the same)
-    if not image_files_to_copy:
+    if not image_sources:
         print("No images to copy.")
         return
 
@@ -853,34 +978,52 @@ def copy_deck_pngs(
     source_file_copy_counts = defaultdict(int)
     copied_count = 0
 
-    for source_path in image_files_to_copy:
-        if not os.path.isfile(source_path):
-            if debug: print(f"DEBUG: Source file not found during copy: {source_path} (should not happen if process_deck_list is correct)")
+    for img_source in image_sources:
+        # Get local path (downloads if needed)
+        local_path = img_source.get_local_path(debug)
+        if not local_path:
+            print(f"Warning: Could not get image from {img_source.original}")
             continue
 
-        original_basename = os.path.basename(source_path)
+        # Extract filename from original source
+        if img_source.is_url:
+            original_basename = os.path.basename(urllib.parse.unquote(img_source.original))
+        else:
+            original_basename = os.path.basename(img_source.original)
+        
         base, ext = os.path.splitext(original_basename)
 
-        source_file_copy_counts[source_path] += 1
-        current_copy_num_for_this_source = source_file_copy_counts[source_path]
+        source_key = img_source.original
+        source_file_copy_counts[source_key] += 1
+        current_copy_num = source_file_copy_counts[source_key]
 
-        if current_copy_num_for_this_source == 1:
+        if current_copy_num == 1:
             dest_basename = original_basename
         else:
-            dest_basename = f"{base}-{current_copy_num_for_this_source}{ext}"
+            dest_basename = f"{base}-{current_copy_num}{ext}"
         
         dest_path = os.path.join(png_out_dir, dest_basename)
 
         try:
-            shutil.copy2(source_path, dest_path) 
+            shutil.copy2(local_path, dest_path)
             if debug:
-                print(f"DEBUG: Copied '{source_path}' to '{dest_path}'")
+                print(f"DEBUG: Copied to '{dest_path}'")
             copied_count += 1
         except Exception as e:
-            print(f"Error copying '{source_path}' to '{dest_path}': {e}")
+            print(f"Error copying to '{dest_path}': {e}")
             
     print(f"Successfully copied {copied_count} PNG files to '{png_out_dir}'.")
 
+def cleanup_temp_files():
+    """Clean up any temporary files created during execution"""
+    global _temp_files
+    for temp_file in _temp_files:
+        if os.path.exists(temp_file):
+            try:
+                os.remove(temp_file)
+            except:
+                pass
+    _temp_files.clear()
 
 # --- Main Function ---
 def main():
@@ -890,7 +1033,7 @@ def main():
     )
     # --- Input/Output Control ---
     mode_group = parser.add_argument_group('Primary Operation Modes (choose one output type)')
-    mode_group.add_argument("--png-dir", type=str, required=True, help="Directory containing source PNG files.")
+    mode_group.add_argument("--png-dir", type=str, help="Directory containing source PNG files.")
     mode_group.add_argument(
         "--deck-list", type=str, default=None,
         help="Path to deck list (COUNT CARD_NAME per line). Required for --png-out-dir."
@@ -908,6 +1051,18 @@ def main():
         "--png-out-dir", type=str, default=None,
         help="Output directory for copying PNGs from deck list. If set, grid generation is skipped."
     )
+    
+    # --- Web Server Options ---
+    webserver_group = parser.add_argument_group('Image Server Options (Nginx WebDAV)')
+    webserver_group.add_argument(
+        "--image-server-base-url", type=str, default=None,
+        help="Base URL of the Nginx WebDAV image server (e.g., http://localhost:8088). "
+             "If provided, images will be fetched from this server instead of --png-dir."
+    )
+    webserver_group.add_argument(
+        "--image-server-path-prefix", type=str, default="/webdav_images",
+        help="Base path prefix on image server."
+    )
 
     # --- General Options ---
     general_group = parser.add_argument_group('General Options')
@@ -920,7 +1075,7 @@ def main():
         help="Use PIL-based PDF generation (modeled after create_pdf.py/utilities.py) when --output-format is pdf. "
              "This mode uses fixed layouts from an internal 'layouts.json' equivalent and ignores most page/layout/cut-line options. "
              "Currently best supports --paper-type letter or a4 (if in layouts). "
-             "EXPECTS an 'assets' FOLDER with registration mark images (e.g., 'letter_registration.jpg') next to the script for proper Cameo output." # MODIFIED Line
+             "EXPECTS an 'assets' FOLDER with registration mark images (e.g., 'letter_registration.jpg') next to the script for proper Cameo output."
     )
     general_group.add_argument(
         "--basic-land-set", type=str, default=None,
@@ -928,7 +1083,6 @@ def main():
              "If specified, only basic lands from these sets will be considered. "
              "Affects random selection of basic lands from --deck-list."
     )
-
 
     # --- Page & Layout Options (for PDF/PNG grid output, LARGELY IGNORED by --cameo) ---
     pg_layout_group = parser.add_argument_group('Page and Layout Options (for PDF/PNG grid output; largely IGNORED by --cameo mode)')
@@ -956,12 +1110,17 @@ def main():
     cut_line_group.add_argument( "--cut-line-width-px", type=int, default=1, 
                                  help="Thickness of cut lines in pixels (for PNG output).")
 
-
     args = parser.parse_args()
 
     # --- Mode Validation ---
+    if not args.png_dir and not args.image_server_base_url:
+        parser.error("Either --png-dir or --image-server-base-url must be specified.")
+    
+    if args.png_dir and args.image_server_base_url:
+        parser.error("Cannot specify both --png-dir and --image-server-base-url. Choose one source.")
+    
     if args.png_out_dir and not args.deck_list:
-        parser.error("--png-out_dir requires --deck-list to be specified.")
+        parser.error("--png-out-dir requires --deck-list to be specified.")
     if args.png_out_dir and (args.output_file or args.output_format != "pdf"): 
         if args.output_file:
             print("Warning: --output-file is ignored when --png-out-dir is used.")
@@ -970,18 +1129,17 @@ def main():
     
     if args.cameo and args.output_format != "pdf":
         print("Warning: --cameo option is only applicable when --output-format is 'pdf'. Ignoring --cameo.")
-        args.cameo = False # Effectively disable it if not PDF
+        args.cameo = False
 
-    # --- Initial Validations (Common) ---
-    if not os.path.isdir(args.png_dir): print(f"Error: PNG directory '{args.png_dir}' not found."); return
+    # --- Initial Validations ---
+    if args.png_dir and not os.path.isdir(args.png_dir):
+        print(f"Error: PNG directory '{args.png_dir}' not found."); return
     if args.deck_list and not os.path.isfile(args.deck_list):
         print(f"Error: Deck list file '{args.deck_list}' not found."); return
     
     validated_paper_type: str
-    try: 
-        # parse_paper_type validates against MtgDeck2Print's known types ("letter", "legal")
-        # The cameo function will do further validation against its own layouts.
-        validated_paper_type = parse_paper_type(args.paper_type) 
+    try:
+        validated_paper_type = parse_paper_type(args.paper_type)
     except ValueError as e: print(f"Error: {e}"); return
 
     # --- Parse basic_land_sets_filter ---
@@ -991,122 +1149,176 @@ def main():
         if args.debug and parsed_basic_land_sets:
             print(f"DEBUG: Parsed basic land set filter: {parsed_basic_land_sets}")
 
-    # --- Determine list of images to process ---
-    image_files_to_process: List[str] = [] 
-    missing_cards_from_deck: List[str] = []
-
-    if args.deck_list:
-        print("--- Deck List Mode ---")
-        image_files_to_process, missing_cards_from_deck = process_deck_list(
-            args.deck_list, args.png_dir, args.skip_basic_land, parsed_basic_land_sets, args.debug
-        ) 
-        if missing_cards_from_deck: 
-            write_missing_cards_file(args.deck_list, missing_cards_from_deck) 
-        
-        if not image_files_to_process and not args.png_out_dir: 
-            print("No images to print (after potential skips). Exiting.")
-            return
-        if image_files_to_process : 
-            print(f"Prepared {len(image_files_to_process)} image instances (excluding any skipped basic lands).")
-
-    elif not args.png_out_dir: 
-        print("--- Directory Scan Mode (for PDF/PNG grid) ---")
-        skipped_basics_count = 0
-        for ext in ("*.png", "*.PNG"):
-            for filepath in glob.glob(os.path.join(args.png_dir, ext)):
-                if args.skip_basic_land and normalize_card_name(os.path.splitext(os.path.basename(filepath))[0]) in BASIC_LAND_NAMES:
-                    if args.debug: print(f"DEBUG: Skipping basic land file: {os.path.basename(filepath)}")
-                    skipped_basics_count +=1; continue
-                image_files_to_process.append(filepath)
-        if args.skip_basic_land and skipped_basics_count > 0: print(f"  Skipped {skipped_basics_count} basic land files.")
-        if not image_files_to_process: print(f"No suitable PNGs in '{args.png_dir}'. Exiting."); return
-        if args.sort: image_files_to_process.sort()
-        print(f"Found {len(image_files_to_process)} PNGs ({'sorted' if args.sort else 'unsorted'}).")
+    # --- Discover images from source ---
+    print("--- Discovering Images ---")
+    if args.image_server_base_url:
+        print(f"Using web server: {args.image_server_base_url}")
+    else:
+        print(f"Using local directory: {args.png_dir}")
     
-    elif args.png_out_dir and not args.deck_list:
-        print("Error: --png-out-dir specified without a --deck-list. Nothing to do.")
+    normalized_file_map, basic_land_details = discover_images(
+        png_dir=args.png_dir,
+        image_server_base_url=args.image_server_base_url,
+        image_server_path_prefix=args.image_server_path_prefix,
+        skip_basic_land=args.skip_basic_land,
+        basic_land_sets_filter=parsed_basic_land_sets,
+        debug=args.debug
+    )
+    
+    if not normalized_file_map and not basic_land_details:
+        print("No images found in source. Exiting.")
         return
 
+    # --- Determine list of images to process ---
+    image_sources_to_process: List[ImageSource] = []
+    missing_cards_from_deck: List[str] = []
 
-    # --- Perform Action: Copy PNGs or Generate Grid ---
-    if args.png_out_dir:
-        if not args.deck_list: 
-            print("Critical Error: --png-out-dir mode reached without a deck list. Please report this bug.")
-            return
-        if image_files_to_process: 
-             copy_deck_pngs(image_files_to_process, args.png_out_dir, args.debug)
-        elif not missing_cards_from_deck: 
-             print("No images to copy (deck list may have contained only skipped basic lands or was empty).")
-
-    else: # Generate PDF or PNG grid
-        if not image_files_to_process:
-            print("No images to generate grid output. Exiting.")
-            return
-
-        base_output_filename_final: str
-        if args.output_file: base_output_filename_final = args.output_file
-        elif args.deck_list:
-            dl_bn = os.path.splitext(os.path.basename(args.deck_list))[0]
-            dl_dir = os.path.dirname(args.deck_list)
-            base_output_filename_final = os.path.join(dl_dir, dl_bn) if dl_dir else dl_bn
-        else: base_output_filename_final = "MtgProxyOutput"
-
-        name_for_pdf_label = os.path.basename(base_output_filename_final) # Get just the filename part for the label
-
-        if args.output_format == "pdf":
-            output_pdf_with_ext = f"{base_output_filename_final}.pdf"
+    try:
+        if args.deck_list:
+            print("\n--- Deck List Mode ---")
+            image_sources_to_process, missing_cards_from_deck = process_deck_list(
+                args.deck_list, normalized_file_map, basic_land_details,
+                args.skip_basic_land, parsed_basic_land_sets, args.debug
+            )
+            if missing_cards_from_deck:
+                write_missing_cards_file(args.deck_list, missing_cards_from_deck)
             
-            if args.cameo:
-                # Warn about ignored arguments if --cameo is active
-                ignored_args_for_cameo = []
-                layout_actions_to_check = [
-                    action for action in pg_layout_group._group_actions 
-                    if action.dest != "image_cell_bg_color" # EXCLUDE this one
-                ]
-                defaults = {arg.dest: arg.default for arg in pg_layout_group._group_actions + cut_line_group._group_actions} # type: ignore
-                if args.page_margin != defaults["page_margin"]: ignored_args_for_cameo.append("--page-margin")
-                if args.image_spacing_pixels != defaults["image_spacing_pixels"]: ignored_args_for_cameo.append("--image-spacing-pixels")
-                if args.page_bg_color != defaults["page_bg_color"]: ignored_args_for_cameo.append("--page-bg-color")
-                if args.cut_lines: ignored_args_for_cameo.append("--cut-lines") # Default is False
-                if args.cut_line_length != defaults["cut_line_length"]: ignored_args_for_cameo.append("--cut-line-length")
-                if args.cut_line_color != defaults["cut_line_color"]: ignored_args_for_cameo.append("--cut-line-color")
-                if args.cut_line_width_pt != defaults["cut_line_width_pt"]: ignored_args_for_cameo.append("--cut-line-width-pt")
+            if not image_sources_to_process and not args.png_out_dir:
+                print("No images to print (after potential skips). Exiting.")
+                return
+            if image_sources_to_process:
+                print(f"Prepared {len(image_sources_to_process)} image instances (excluding any skipped basic lands).")
+
+        elif not args.png_out_dir:
+            print("\n--- Directory Scan Mode (for PDF/PNG grid) ---")
+            skipped_basics_count = 0
+            
+            # For directory scan, just use all images in normalized_file_map
+            for norm_key, img_source in normalized_file_map.items():
+                if args.skip_basic_land and norm_key in BASIC_LAND_NAMES:
+                    if args.debug: print(f"DEBUG: Skipping basic land: {norm_key}")
+                    skipped_basics_count += 1
+                    continue
+                image_sources_to_process.append(img_source)
+            
+            if args.skip_basic_land and skipped_basics_count > 0:
+                print(f"  Skipped {skipped_basics_count} basic land files.")
+            if not image_sources_to_process:
+                print(f"No suitable PNGs found. Exiting.")
+                return
+            if args.sort:
+                # Sort by original path/URL
+                image_sources_to_process.sort(key=lambda x: x.original)
+            print(f"Found {len(image_sources_to_process)} PNGs ({'sorted' if args.sort else 'unsorted'}).")
+        
+        elif args.png_out_dir and not args.deck_list:
+            print("Error: --png-out-dir specified without a --deck-list. Nothing to do.")
+            return
+
+        # --- Perform Action: Copy PNGs or Generate Grid ---
+        if args.png_out_dir:
+            if not args.deck_list:
+                print("Critical Error: --png-out-dir mode reached without a deck list. Please report this bug.")
+                return
+            if image_sources_to_process:
+                copy_deck_pngs(image_sources_to_process, args.png_out_dir, args.debug)
+            elif not missing_cards_from_deck:
+                print("No images to copy (deck list may have contained only skipped basic lands or was empty).")
+
+        else:  # Generate PDF or PNG grid
+            if not image_sources_to_process:
+                print("No images to generate grid output. Exiting.")
+                return
+
+            base_output_filename_final: str
+            if args.output_file:
+                base_output_filename_final = args.output_file
+            elif args.deck_list:
+                dl_bn = os.path.splitext(os.path.basename(args.deck_list))[0]
+                dl_dir = os.path.dirname(args.deck_list)
+                base_output_filename_final = os.path.join(dl_dir, dl_bn) if dl_dir else dl_bn
+            else:
+                base_output_filename_final = "MtgProxyOutput"
+
+            name_for_pdf_label = os.path.basename(base_output_filename_final)
+
+            if args.output_format == "pdf":
+                output_pdf_with_ext = f"{base_output_filename_final}.pdf"
                 
-                if ignored_args_for_cameo:
-                    print(f"Warning: --cameo mode is active. The following options are ignored as layout is dictated by internal cameo profiles: {', '.join(ignored_args_for_cameo)}")
-                
-                create_pdf_cameo_style(
-                    image_files=image_files_to_process,
-                    output_pdf_file=output_pdf_with_ext,
-                    paper_type_arg=validated_paper_type, # This is MtgDeck2Print's "letter" or "legal"
-                    target_dpi=args.dpi,
-                    image_cell_bg_color_str=args.image_cell_bg_color,
-                    pdf_name_label=name_for_pdf_label,
+                if args.cameo:
+                    # Warn about ignored arguments if --cameo is active
+                    ignored_args_for_cameo = []
+                    defaults = {
+                        "page_margin": "5mm",
+                        "image_spacing_pixels": 0,
+                        "page_bg_color": "white",
+                        "cut_lines": False,
+                        "cut_line_length": "3mm",
+                        "cut_line_color": "gray",
+                        "cut_line_width_pt": 0.25
+                    }
+                    if args.page_margin != defaults["page_margin"]: ignored_args_for_cameo.append("--page-margin")
+                    if args.image_spacing_pixels != defaults["image_spacing_pixels"]: ignored_args_for_cameo.append("--image-spacing-pixels")
+                    if args.page_bg_color != defaults["page_bg_color"]: ignored_args_for_cameo.append("--page-bg-color")
+                    if args.cut_lines: ignored_args_for_cameo.append("--cut-lines")
+                    if args.cut_line_length != defaults["cut_line_length"]: ignored_args_for_cameo.append("--cut-line-length")
+                    if args.cut_line_color != defaults["cut_line_color"]: ignored_args_for_cameo.append("--cut-line-color")
+                    if args.cut_line_width_pt != defaults["cut_line_width_pt"]: ignored_args_for_cameo.append("--cut-line-width-pt")
+                    
+                    if ignored_args_for_cameo:
+                        print(f"Warning: --cameo mode is active. The following options are ignored: {', '.join(ignored_args_for_cameo)}")
+                    
+                    create_pdf_cameo_style(
+                        image_sources=image_sources_to_process,
+                        output_pdf_file=output_pdf_with_ext,
+                        paper_type_arg=validated_paper_type,
+                        target_dpi=args.dpi,
+                        image_cell_bg_color_str=args.image_cell_bg_color,
+                        pdf_name_label=name_for_pdf_label,
+                        debug=args.debug
+                    )
+                else:  # Original ReportLab PDF
+                    create_pdf_grid(
+                        image_sources=image_sources_to_process,
+                        output_pdf_file=output_pdf_with_ext,
+                        paper_type_str=validated_paper_type,
+                        image_spacing_pixels=args.image_spacing_pixels,
+                        dpi=args.dpi,
+                        page_margin_str=args.page_margin,
+                        page_background_color_str=args.page_bg_color,
+                        image_cell_background_color_str=args.image_cell_bg_color,
+                        cut_lines=args.cut_lines,
+                        cut_line_length_str=args.cut_line_length,
+                        cut_line_color_str=args.cut_line_color,
+                        cut_line_width_pt=args.cut_line_width_pt,
+                        debug=args.debug
+                    )
+            elif args.output_format == "png":
+                create_png_output(
+                    image_files=image_sources_to_process,
+                    base_output_filename=base_output_filename_final,
+                    paper_type_str=validated_paper_type, dpi=args.dpi,
+                    image_spacing_pixels=args.image_spacing_pixels,
+                    page_margin_str=args.page_margin,
+                    page_background_color_str=args.page_bg_color,
+                    image_cell_background_color_str=args.image_cell_bg_color,
+                    cut_lines=args.cut_lines,
+                    cut_line_length_str=args.cut_line_length,
+                    cut_line_color_str=args.cut_line_color,
+                    cut_line_width_px=args.cut_line_width_px,
                     debug=args.debug
                 )
-            else: # Original ReportLab PDF
-                create_pdf_grid(
-                    image_files=image_files_to_process, output_pdf_file=output_pdf_with_ext, 
-                    paper_type_str=validated_paper_type, image_spacing_pixels=args.image_spacing_pixels,
-                    dpi=args.dpi, page_margin_str=args.page_margin,
-                    page_background_color_str=args.page_bg_color, image_cell_background_color_str=args.image_cell_bg_color,
-                    cut_lines=args.cut_lines, cut_line_length_str=args.cut_line_length,
-                    cut_line_color_str=args.cut_line_color, cut_line_width_pt=args.cut_line_width_pt
-                )
-        elif args.output_format == "png":
-            create_png_output(
-                image_files=image_files_to_process, base_output_filename=base_output_filename_final,
-                paper_type_str=validated_paper_type, dpi=args.dpi,
-                image_spacing_pixels=args.image_spacing_pixels, page_margin_str=args.page_margin,
-                page_background_color_str=args.page_bg_color, image_cell_background_color_str=args.image_cell_bg_color,
-                cut_lines=args.cut_lines, cut_line_length_str=args.cut_line_length,
-                cut_line_color_str=args.cut_line_color, cut_line_width_px=args.cut_line_width_px,
-                debug=args.debug
-            )
-        else:
-            print(f"Error: Unknown output format '{args.output_format}'.") # Should be caught by argparse choices
+            else:
+                print(f"Error: Unknown output format '{args.output_format}'.")
 
-from typing import Any # Add Any for LAYOUTS_DATA type hint if not already there
+    finally:
+        # Clean up temporary files
+        cleanup_temp_files()
+        # Clean up any ImageSource temp files
+        for img_source in image_sources_to_process:
+            img_source.cleanup()
+
+from typing import Any
 
 if __name__ == "__main__":
     main()
