@@ -41,7 +41,7 @@ _temp_files: Set[str] = set()
 def list_webdav_directory(base_url: str, path: str = "/", debug: bool = False) -> List[Dict[str, str]]:
     """
     List files in a WebDAV directory using PROPFIND.
-    Returns a list of dicts with 'name' and 'href' keys.
+    Returns a list of dicts with 'name' and 'href' (as a full URL) keys.
     """
     url = urljoin(base_url, path)
     if debug:
@@ -83,7 +83,7 @@ def list_webdav_directory(base_url: str, path: str = "/", debug: bool = False) -
             resourcetype_elem = response_elem.find('.//d:resourcetype', ns)
             
             if href_elem is not None:
-                href = href_elem.text
+                relative_href = href_elem.text
                 # Skip directories (they have a <collection/> element)
                 if resourcetype_elem is not None and resourcetype_elem.find('d:collection', ns) is not None:
                     continue
@@ -93,12 +93,16 @@ def list_webdav_directory(base_url: str, path: str = "/", debug: bool = False) -
                     filename = displayname_elem.text
                 else:
                     # Extract filename from href
-                    filename = os.path.basename(urllib.parse.unquote(href.rstrip('/')))
+                    filename = os.path.basename(urllib.parse.unquote(relative_href.rstrip('/')))
                 
                 if filename and filename.lower().endswith('.png'):
+                    # --- FIX: Construct the full URL here ---
+                    # The href from WebDAV is typically root-relative (e.g., /path/to/file.png)
+                    # urljoin handles this correctly.
+                    full_url = urljoin(base_url, relative_href)
                     files.append({
                         'name': filename,
-                        'href': href
+                        'href': full_url  # Store the full URL
                     })
         
         if debug:
@@ -119,8 +123,13 @@ def list_webdav_directory(base_url: str, path: str = "/", debug: bool = False) -
 def list_http_directory(url: str, debug: bool = False) -> List[Dict[str, str]]:
     """
     Fallback method to list files from a simple HTTP directory listing.
-    Parses HTML for links to PNG files.
+    Parses HTML for links to PNG files. Returns full URLs.
     """
+
+    # --- FIX: Ensure the URL is treated as a directory for urljoin ---
+    if not url.endswith('/'):
+        url += '/'
+
     if debug:
         print(f"DEBUG: Attempting HTTP directory listing: {url}")
     
@@ -135,9 +144,13 @@ def list_http_directory(url: str, debug: bool = False) -> List[Dict[str, str]]:
         files = []
         for match in matches:
             filename = os.path.basename(urllib.parse.unquote(match))
+            # --- FIX: Construct the full URL here ---
+            # The 'match' can be a relative path (e.g., "card.png").
+            # urljoin correctly combines the directory URL with the relative path.
+            full_url = urljoin(url, match)
             files.append({
                 'name': filename,
-                'href': match
+                'href': full_url # Store the full URL
             })
         
         if debug:
@@ -235,13 +248,11 @@ def discover_images(
         # List files from web server
         files = list_webdav_directory(image_server_base_url, image_server_path_prefix, debug)
         
+        # --- FIX: Simplified loop ---
         for file_info in files:
             filename = file_info['name']
-            # Construct full URL
-            if file_info['href'].startswith('http'):
-                file_url = file_info['href']
-            else:
-                file_url = urljoin(image_server_base_url, file_info['href'])
+            # The 'href' from file_info is now a complete, absolute URL.
+            file_url = file_info['href']
             
             basename_no_ext = os.path.splitext(filename)[0]
             
