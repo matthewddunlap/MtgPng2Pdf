@@ -48,7 +48,7 @@ BASIC_LAND_NAMES: Set[str] = {
 # Global temp file tracking for cleanup
 _temp_files: Set[str] = set()
 
-# --- Web Server Upload Functions (unchanged) ---
+# --- Web Server Upload Functions ---
 def check_server_file_exists(url: str, debug: bool = False) -> bool:
     """Check if a file already exists at a given URL using a HEAD request."""
     if not url:
@@ -94,56 +94,92 @@ def upload_file_to_server(url: str, file_bytes: bytes, mime_type: str, debug: bo
         print(f"Error: Upload failed due to a network error: {e}")
         return False
 
-# --- Web Server Functions (unchanged) ---
+# --- Web Server Functions ---
 def list_webdav_directory(base_url: str, path: str = "/", debug: bool = False) -> List[Dict[str, str]]:
+    """
+    List files in a directory using WebDAV PROPFIND, with a fallback to simple HTTP listing.
+    Returns a list of dicts with 'name' and 'href' (as a full URL) keys.
+    """
     url = urljoin(base_url, path)
-    if debug: print(f"DEBUG: Listing WebDAV directory: {url}")
+    if debug: print(f"DEBUG: Listing directory: {url}")
+    
+    # Build PROPFIND request body
     propfind_body = '''<?xml version="1.0" encoding="utf-8"?><D:propfind xmlns:D="DAV:"><D:prop><D:displayname/><D:resourcetype/></D:prop></D:propfind>'''
+    
     req = urllib.request.Request(url, data=propfind_body.encode('utf-8'), headers={'Content-Type': 'application/xml; charset=utf-8', 'Depth': '1'}, method='PROPFIND')
+    
     try:
         with urllib.request.urlopen(req) as response: content = response.read().decode('utf-8')
+        
+        # Parse XML response
         root = ET.fromstring(content); files = []; ns = {'d': 'DAV:'}
+        
         for response_elem in root.findall('.//d:response', ns):
             href_elem = response_elem.find('d:href', ns)
             displayname_elem = response_elem.find('.//d:displayname', ns)
             resourcetype_elem = response_elem.find('.//d:resourcetype', ns)
+            
             if href_elem is not None:
                 relative_href = href_elem.text
+                # Skip directories (they have a <collection/> element)
                 if resourcetype_elem is not None and resourcetype_elem.find('d:collection', ns) is not None: continue
+                
+                # Get filename
                 if displayname_elem is not None and displayname_elem.text: filename = displayname_elem.text
                 else: filename = os.path.basename(urllib.parse.unquote(relative_href.rstrip('/')))
+                
                 if filename and filename.lower().endswith('.png'):
+                    # Construct the full URL for the file
                     full_url = urljoin(base_url, relative_href)
                     files.append({'name': filename, 'href': full_url})
-        if debug: print(f"DEBUG: Found {len(files)} PNG files in WebDAV directory")
+        
+        if debug: print(f"DEBUG: Found {len(files)} PNG files in directory")
         return files
+        
     except urllib.error.HTTPError as e:
+        # If PROPFIND is not allowed, fall back to simple HTTP listing
         if e.code == 405: return list_http_directory(url, debug)
-        else: print(f"Error listing WebDAV directory: HTTP {e.code} - {e.reason}"); return []
-    except Exception as e: print(f"Error listing WebDAV directory: {e}"); return []
+        else: print(f"Error listing directory: HTTP {e.code} - {e.reason}"); return []
+    except Exception as e: print(f"Error listing directory: {e}"); return []
 
 def list_http_directory(url: str, debug: bool = False) -> List[Dict[str, str]]:
+    """
+    Fallback method to list files from a simple HTTP directory listing.
+    Parses HTML for links to PNG files. Returns full URLs.
+    """
     if not url.endswith('/'): url += '/'
     if debug: print(f"DEBUG: Attempting HTTP directory listing: {url}")
     try:
         with urllib.request.urlopen(url) as response: content = response.read().decode('utf-8')
+        
+        # Simple regex to find links to PNG files
         png_pattern = r'href="([^"]+\.png)"'; matches = re.findall(png_pattern, content, re.IGNORECASE)
+        
         files = []
         for match in matches:
             filename = os.path.basename(urllib.parse.unquote(match))
             full_url = urljoin(url, match)
             files.append({'name': filename, 'href': full_url})
+        
         if debug: print(f"DEBUG: Found {len(files)} PNG files in HTTP directory listing")
         return files
     except Exception as e: print(f"Error listing HTTP directory: {e}"); return []
 
 def download_image(url: str, dest_path: Optional[str] = None, debug: bool = False) -> Optional[str]:
+    """
+    Download an image from URL. If dest_path is None, saves to a temp file.
+    Returns the path to the downloaded file, or None on error.
+    """
     if debug: print(f"DEBUG: Downloading image from {url}")
     try:
+        # Create temp file if no destination specified
         if dest_path is None:
             fd, dest_path = tempfile.mkstemp(suffix='.png'); os.close(fd)
             _temp_files.add(dest_path)
+        
+        # Download the file
         urllib.request.urlretrieve(url, dest_path)
+        
         if debug: print(f"DEBUG: Downloaded to {dest_path}")
         return dest_path
     except Exception as e:
@@ -160,21 +196,23 @@ class ImageSource:
         self.local_path = None if is_url else path_or_url
         self.temp_file = None
     def get_local_path(self, debug: bool = False) -> Optional[str]:
+        """Get a local file path, downloading if necessary"""
         if not self.is_url: return self.local_path
         if self.temp_file is None: self.temp_file = download_image(self.original, debug=debug)
         return self.temp_file
     def cleanup(self):
+        """Clean up any temporary files"""
         if self.temp_file and os.path.exists(self.temp_file):
             try: os.remove(self.temp_file); _temp_files.discard(self.temp_file)
             except: pass
             self.temp_file = None
     def __del__(self): self.cleanup()
 
-# --- MODIFIED: PNG discovery function to group all variants of a card ---
+# --- PNG discovery function ---
 def discover_images(
     png_dir: Optional[str] = None,
     image_server_base_url: Optional[str] = None,
-    image_server_path_prefix: str = "/webdav_images",
+    image_server_path_prefix: str = "/local_art",
     debug: bool = False
 ) -> Dict[str, List[ImageSource]]:
     """
@@ -184,7 +222,6 @@ def discover_images(
     all_cards_map: Dict[str, List[ImageSource]] = defaultdict(list)
     
     def process_file(filename: str, source_path: str, is_url: bool):
-        # --- THIS IS THE KEY FIX ---
         # Parse the filename to get the card's base name, which we use as the key.
         normalized_key, _, _ = parse_variant_filename(filename)
         
@@ -201,6 +238,7 @@ def discover_images(
         # Web server mode
         if debug:
             print(f"DEBUG: Discovering images from web server: {image_server_base_url}")
+            print(f"DEBUG: Image source path on server: {image_server_path_prefix}")
         
         files = list_webdav_directory(image_server_base_url, image_server_path_prefix, debug)
         
@@ -222,9 +260,42 @@ def discover_images(
 
     return all_cards_map
 
-# --- Cameo PDF Generation Code (unchanged) ---
-# ... (This large block of code is unchanged, so it's omitted for brevity) ...
-LAYOUTS_DATA: Dict[str, Any] = { "paper_layouts": { "letter": { "width": 3300, "height": 2550, "card_layouts": { "standard": { "width": 742, "height": 1036, "x_pos": [141, 900, 1658, 2417], "y_pos": [232, 1282], "template": "letter_standard_v3" }, "japanese": { "width": 694, "height": 1015, "x_pos": [165, 924, 1682, 2441], "y_pos": [243, 1293], "template": "letter_japanese_v1" }, } }, "a4": { "width": 3508, "height": 2480, "card_layouts": { "standard": { "width": 742, "height": 1036, "x_pos": [245, 1004, 1763, 2522], "y_pos": [197, 1247], "template": "a4_standard_v2" }, } }, } }
+# --- Cameo PDF Generation Code ---
+
+# Embedded layouts.json content
+LAYOUTS_DATA: Dict[str, Any] = {
+    "paper_layouts": {
+        "letter": {
+            "width": 3300,
+            "height": 2550,
+            "card_layouts": {
+                "standard": {
+                    "width": 742,
+                    "height": 1036,
+                    "x_pos": [141, 900, 1658, 2417],
+                    "y_pos": [232, 1282],
+                    "template": "letter_standard_v3"
+                },
+                "japanese": {
+                    "width": 694, "height": 1015,
+                    "x_pos": [165, 924, 1682, 2441], "y_pos": [243, 1293],
+                    "template": "letter_japanese_v1"
+                },
+            }
+        },
+        "a4": {
+            "width": 3508, "height": 2480,
+            "card_layouts": {
+                "standard": {
+                    "width": 742, "height": 1036,
+                    "x_pos": [245, 1004, 1763, 2522], "y_pos": [197, 1247],
+                    "template": "a4_standard_v2"
+                },
+            }
+        },
+    }
+}
+
 class CameoPaperSize: LETTER = "letter"; A4 = "a4"
 class CameoCardSize: STANDARD = "standard"; JAPANESE = "japanese"
 def calculate_max_print_bleed_cameo(x_pos: List[int], y_pos: List[int], width: int, height: int) -> int:
@@ -338,14 +409,20 @@ def create_pdf_cameo_style(image_sources: List[ImageSource], output_path_or_buff
 # --- Helper Functions ---
 
 def normalize_card_name(name: str) -> str:
+    """
+    A robust function to normalize a card name for consistent key generation.
+    Removes accents, punctuation, and whitespace, and converts to lowercase.
+    """
     name = name.lower().strip()
+    # Decompose unicode characters (like accents) into base characters
     normalized_name = unicodedata.normalize('NFKD', name).encode('ascii', 'ignore').decode('ascii')
-    # Keep '-' for parsing, but remove other punctuation for normalization
+    # Remove common punctuation and whitespace used as separators
     normalized_name = re.sub(r"[',\.:()\[\]\s_]", "", normalized_name)
+    # Remove any remaining non-alphanumeric characters (except hyphens if needed, but we remove them here for the key)
     normalized_name = re.sub(r"[^a-z0-9-]", "", normalized_name)
     return normalized_name.strip()
 
-# --- NEW: Data structure for a parsed deck list line ---
+# Data structure for a parsed deck list line
 class DecklistEntry(NamedTuple):
     count: int
     card_name: str
@@ -353,23 +430,29 @@ class DecklistEntry(NamedTuple):
     collector_number: Optional[str]
     original_line: str
 
-# --- CORRECTED: Regex to parse Moxfield-style deck list lines (now case-insensitive) ---
+# Regex to parse Moxfield-style deck list lines
 MOXFIELD_LINE_RE = re.compile(
-    r"^\s*(?P<count>\d+)\s+"      # 1. Capture count and trailing space(s)
-    r"(?P<name>.+?)"              # 2. Capture card name (non-greedy)
+    # 1. Capture count and trailing space(s)
+    r"^\s*(?P<count>\d+)\s+"
+    # 2. Capture card name (non-greedy)
+    r"(?P<name>.+?)"
     # 3. An optional group for the set, which itself contains an optional group for the number.
-    r"(?:\s+\((?P<set>[A-Z0-9]{3,5})\)"  # The set part is required for this block to match
-    r"(?:\s+(?P<number>[\w\d\s\-\★]+))?)?" # The number part is now optional within the block
-    r"\s*$",                       # 4. Match any trailing whitespace and the end of the line.
-    re.IGNORECASE  # <--- THIS IS THE FIX. Makes the whole regex case-insensitive.
+    #    The set part is required for this block to match.
+    r"(?:\s+\((?P<set>[A-Z0-9]{3,5})\)"
+    #    The number part is now optional within the set block.
+    r"(?:\s+(?P<number>[\w\d\s\-\★]+))?)?"
+    # 4. Match any trailing whitespace and the end of the line.
+    r"\s*$",
+    # This flag makes the whole regex case-insensitive for set codes like (ice) or (ICE).
+    re.IGNORECASE
 )
 
-# --- Function to parse a single deck list line (no changes needed here, but shown for context) ---
 def parse_moxfield_line(line: str) -> Optional[DecklistEntry]:
-    """Parses a deck list line into its components."""
+    """Parses a deck list line into its components using the main regex."""
     match = MOXFIELD_LINE_RE.match(line)
     if not match:
-        # Fallback for simple "COUNT NAME" format if the main regex fails
+        # Fallback for simple "COUNT NAME" format if the main regex fails.
+        # This handles lines without any (SET) information.
         parts = line.strip().split(maxsplit=1)
         if len(parts) == 2 and parts[0].isdigit():
             return DecklistEntry(
@@ -392,18 +475,17 @@ def parse_moxfield_line(line: str) -> Optional[DecklistEntry]:
         original_line=line
     )
 
-# --- MODIFIED: Generalize the filename parser ---
 def parse_variant_filename(filename: str) -> Tuple[str, Optional[str], Optional[str]]:
     """
     Parses a card filename like 'Memory-Lapse_ema_60.png' or 'Dandân_arn_12.png'.
     Returns (normalized_name, set_code, collector_number)
     """
     basename_no_ext = os.path.splitext(os.path.basename(filename))[0]
-    # Split by either hyphen or underscore
+    # Split by either hyphen or underscore to handle different naming conventions
     parts = re.split(r'[-_]', basename_no_ext)
 
     # Heuristic: If there are at least 3 parts, the last two are likely set/number.
-    # This handles "Card-Name-SET-NUM" and "Card Name_SET_NUM"
+    # This handles "Card-Name-SET-NUM" and "Card_Name_SET_NUM".
     if len(parts) >= 3:
         # A simple check to see if the second-to-last part looks like a set code.
         # Most set codes are 3-5 alphanumeric characters.
@@ -413,6 +495,7 @@ def parse_variant_filename(filename: str) -> Tuple[str, Optional[str], Optional[
             collector_number = parts[-1].lower()
             set_code = parts[-2].lower()
             # Everything before the set and number is the card name.
+            # We join them without separators because normalize_card_name will remove them anyway.
             name_str = "".join(parts[:-2])
             normalized_name = normalize_card_name(name_str)
             return normalized_name, set_code, collector_number
@@ -421,21 +504,19 @@ def parse_variant_filename(filename: str) -> Tuple[str, Optional[str], Optional[
     # treat the whole thing as the name. This handles "Sol Ring.png".
     return normalize_card_name(basename_no_ext), None, None
 
-# --- HEAVILY MODIFIED: process_deck_list with preference/force logic for set filters ---
 def process_deck_list(
     deck_list_path: str,
     all_cards_map: Dict[str, List[ImageSource]],
     skip_basic_land: bool,
     basic_land_sets_filter: Optional[List[str]],
-    basic_land_set_mode: str, # --- NEW ---
+    basic_land_set_mode: str,
     spell_sets_filter: Optional[List[str]],
-    spell_set_mode: str, # --- NEW ---
+    spell_set_mode: str,
     debug: bool = False
 ) -> Tuple[List[ImageSource], List[str]]:
     """
     Processes a deck list with fully-specific, set-specific, and generic entries.
     """
-    # ... (Categorization and Pass 1/2/3 for specific requests are unchanged) ...
     images_to_print: List[ImageSource] = []
     missing_card_names: List[str] = []
     skipped_basic_lands_count: Dict[str, int] = defaultdict(int)
@@ -444,27 +525,40 @@ def process_deck_list(
     set_specific_requests: List[DecklistEntry] = []
     generic_requests: List[DecklistEntry] = []
 
+    # --- Pass 1: Categorize all lines from the deck list ---
     try:
         with open(deck_list_path, 'r', encoding='utf-8') as f:
             for line_num, line in enumerate(f, 1):
                 line = line.strip()
+
+                # A valid data line must not be empty and must start with a digit.
+                # This robustly skips comments, headers, and malformed lines.
                 if not line or not line[0].isdigit():
-                    if debug and line: print(f"DEBUG: Skipping non-data line {line_num}: '{line}'")
+                    if debug and line: # Log the skipped line if it's not just empty
+                        print(f"DEBUG: Skipping non-data line {line_num}: '{line}'")
                     continue
+                
                 entry = parse_moxfield_line(line)
                 if not entry:
+                    # This block now only catches genuinely malformed data lines (e.g., "1 card name (invalid-set)")
                     print(f"  Warning: Skipping malformed data line {line_num}: '{line}'")
                     missing_card_names.append(line)
                     continue
-                if entry.set_code and entry.collector_number: fully_specific_requests.append(entry)
-                elif entry.set_code: set_specific_requests.append(entry)
-                else: generic_requests.append(entry)
+                
+                if entry.set_code and entry.collector_number:
+                    fully_specific_requests.append(entry)
+                elif entry.set_code: # Has set, but no collector number
+                    set_specific_requests.append(entry)
+                else: # Has neither
+                    generic_requests.append(entry)
+
     except FileNotFoundError:
         print(f"Error: Deck list file not found: {deck_list_path}")
         return [], []
 
     used_sources: Set[ImageSource] = set()
 
+    # --- Pass 2: Process FULLY-SPECIFIC requests first ---
     if debug and fully_specific_requests: print("DEBUG: Processing fully-specific card requests...")
     for entry in fully_specific_requests:
         normalized_name = normalize_card_name(entry.card_name)
@@ -482,6 +576,7 @@ def process_deck_list(
             print(f"  NOT FOUND (Fully-Specific): {entry.count}x '{entry.original_line}'")
             missing_card_names.append(entry.original_line)
 
+    # --- Pass 3: Process SET-SPECIFIC requests ---
     if debug and set_specific_requests: print("DEBUG: Processing set-specific card requests...")
     for entry in set_specific_requests:
         normalized_name = normalize_card_name(entry.card_name)
@@ -511,53 +606,45 @@ def process_deck_list(
         for src in selected_sources: used_sources.add(src)
 
     # --- Pass 4: Process GENERIC requests ---
-    if debug and generic_requests:
-        print("DEBUG: Processing generic card requests...")
+    if debug and generic_requests: print("DEBUG: Processing generic card requests...")
     for entry in generic_requests:
         normalized_name = normalize_card_name(entry.card_name)
         is_basic_land = normalized_name in BASIC_LAND_NAMES
-
         if is_basic_land and skip_basic_land:
             if debug: print(f"DEBUG: Skipping basic land: {entry.count}x '{entry.card_name}'")
             skipped_basic_lands_count[entry.card_name] += entry.count
             continue
-
         available_sources = all_cards_map.get(normalized_name, [])
         candidate_pool = [src for src in available_sources if src not in used_sources]
-
         if not candidate_pool:
             print(f"  NOT FOUND (Generic): No available images for {entry.count}x '{entry.card_name}'")
             missing_card_names.append(f"{entry.count}x {entry.card_name}")
             continue
-
-        # --- MODIFIED: Apply global set filters with preference/force logic ---
+        
+        # Apply global set filters with preference/force logic
         if is_basic_land and basic_land_sets_filter:
             filtered_pool = [src for src in candidate_pool if parse_variant_filename(src.original)[1] in basic_land_sets_filter]
             if not filtered_pool:
                 if basic_land_set_mode == 'prefer':
                     print(f"  WARN: No '{entry.card_name}' found in preferred sets {basic_land_sets_filter}. Falling back to all available sets.")
-                    # Keep the original candidate_pool
                 else: # mode is 'force'
                     print(f"  NOT FOUND (Basic Land): No '{entry.card_name}' matching required sets: {basic_land_sets_filter}")
                     missing_card_names.append(f"{entry.count}x {entry.card_name} (Set Mismatch: {basic_land_sets_filter})")
-                    continue # Skip to next decklist entry
+                    continue
             else:
-                candidate_pool = filtered_pool # Use the successfully filtered pool
-
+                candidate_pool = filtered_pool
         elif not is_basic_land and spell_sets_filter:
             filtered_pool = [src for src in candidate_pool if parse_variant_filename(src.original)[1] in spell_sets_filter]
             if not filtered_pool:
                 if spell_set_mode == 'prefer':
                     print(f"  WARN: No '{entry.card_name}' found in preferred sets {spell_sets_filter}. Falling back to all available sets.")
-                    # Keep the original candidate_pool
                 else: # mode is 'force'
                     print(f"  NOT FOUND (Spell): No '{entry.card_name}' matching required sets: {spell_sets_filter}")
                     missing_card_names.append(f"{entry.count}x {entry.card_name} (Set Mismatch: {spell_sets_filter})")
-                    continue # Skip to next decklist entry
+                    continue
             else:
-                candidate_pool = filtered_pool # Use the successfully filtered pool
-        # --- END MODIFICATION ---
-
+                candidate_pool = filtered_pool
+        
         # Select cards from the final candidate pool
         selected_sources: List[ImageSource] = []
         num_unique_candidates = len(candidate_pool)
@@ -568,16 +655,13 @@ def process_deck_list(
             remaining = entry.count - num_unique_candidates
             duplicates = random.choices(candidate_pool, k=remaining)
             selected_sources.extend(duplicates)
-        
         images_to_print.extend(selected_sources)
-        for src in selected_sources:
-            used_sources.add(src)
+        for src in selected_sources: used_sources.add(src)
 
     if skipped_basic_lands_count:
         print("  Skipped the following basic lands:")
         for name, num in skipped_basic_lands_count.items():
             print(f"    - {num}x {name}")
-        
     return images_to_print, list(set(missing_card_names))
 
 def write_missing_cards_file(deck_list_path: str, missing_cards: List[str]):
@@ -592,7 +676,6 @@ def write_missing_cards_file(deck_list_path: str, missing_cards: List[str]):
             for card_name in sorted(missing_cards): f.write(f"{card_name}\n")
         print(f"List of missing cards saved to: {missing_filepath}")
     except IOError as e: print(f"Error writing missing cards file '{missing_filepath}': {e}")
-
 def parse_dimension_to_pixels(dim_str: str, dpi: int, default_unit_is_mm: bool = False) -> int:
     dim_str = dim_str.lower().strip(); val_str = ""; unit_str = ""
     for char in dim_str:
@@ -608,15 +691,11 @@ def parse_dimension_to_pixels(dim_str: str, dpi: int, default_unit_is_mm: bool =
     elif not unit_str: raise ValueError(f"Dimension '{dim_str}' lacks units (in, mm, px).")
     else: raise ValueError(f"Unknown unit '{unit_str}' in '{dim_str}'. Use in, mm, px.")
     return int(round(pixels))
-
 def parse_paper_type(size_str: str) -> str:
     size_str = size_str.lower().strip()
     if size_str not in PAPER_SIZES_PT:
         raise ValueError(f"Invalid paper type: '{size_str}'. Supported: {', '.join(PAPER_SIZES_PT.keys())}")
     return size_str
-
-# --- create_pdf_grid, create_png_output, copy_deck_pngs, cleanup_temp_files (all unchanged) ---
-# ... (These functions are unchanged and omitted for brevity) ...
 def create_pdf_grid(image_sources: List[ImageSource], output_path_or_buffer: Union[str, io.BytesIO], **kwargs):
     if isinstance(output_path_or_buffer, str): print(f"\n--- PDF Generation Settings (ReportLab: {output_path_or_buffer}) ---")
     else: print(f"\n--- PDF Generation Settings (ReportLab to memory buffer) ---")
@@ -706,41 +785,62 @@ def main():
     mode_group.add_argument("--png-dir", type=str, help="Directory containing source PNG files.")
     mode_group.add_argument(
         "--deck-list", type=str, default=None,
-        # --- MODIFIED: Update help text for deck list format ---
-        help="Path to deck list. Supports simple 'COUNT CARD_NAME' and Moxfield 'COUNT NAME (SET) NUM' formats."
+        help="Path to deck list. Supports 'COUNT NAME', 'COUNT NAME (SET)', and 'COUNT NAME (SET) NUM' formats."
     )
-    # ... (rest of argparse is unchanged, omitted for brevity) ...
     mode_group.add_argument("--output-file", type=str, default=None, help="Base name for local PDF/PNG grid output, or just the filename for server upload. Extension auto-added. Defaults to MtgProxyOutput, or <deck_list_name> if --deck-list is used.")
     mode_group.add_argument("--output-format", type=str, default="pdf", choices=["pdf", "png"], help="Format for grid layout output (pdf or png). Ignored if --png-out-dir is used.")
     mode_group.add_argument("--png-out-dir", type=str, default=None, help="Output directory for copying PNGs from deck list. If set, grid generation is skipped.")
-    webserver_group = parser.add_argument_group('Image Server Options (Nginx WebDAV)')
-    webserver_group.add_argument("--image-server-base-url", type=str, default=None, help="Base URL of the Nginx WebDAV image server (e.g., http://localhost:8088). If provided, images will be fetched from this server instead of --png-dir.")
-    webserver_group.add_argument("--image-server-path-prefix", type=str, default="/webdav_images", help="Base path prefix on image server.")
-    webserver_upload_group = parser.add_argument_group('Web Server Upload Options (for PDF output)')
-    webserver_upload_group.add_argument("--upload-to-server", action="store_true", help="Upload the generated PDF to the WebDAV server instead of saving it locally. Requires --image-server-base-url and --output-server-path.")
-    webserver_upload_group.add_argument("--output-server-path", type=str, default=None, help="Subdirectory on the server to upload the final PDF to (e.g., '/proxies/pdfs').")
-    webserver_upload_group.add_argument("--overwrite-server-file", action="store_true", help="If a file with the same name exists on the server, overwrite it. Default is to fail.")
+    
+    # --- MODIFIED: Renamed to be more generic ---
+    server_group = parser.add_argument_group('Image Server Options')
+    # --- MODIFIED: Help text updated, dual purpose explained ---
+    server_group.add_argument(
+        "--image-server-base-url", type=str, default=None,
+        help="Base URL of the image server. If provided, images will be fetched from this server instead of --png-dir. "
+             "If --upload-to-server is used, output files will be PUT to this server instead of being saved locally. "
+             "Required if --upload-to-server is set."
+    )
+    # --- MODIFIED: Default and help text updated ---
+    server_group.add_argument(
+        "--image-server-path-prefix", type=str, default="/local_art",
+        help="Base path for the art URL. Used for both PNG card image retrieval and, if --upload-to-server is used, "
+             "constructing the output file path for the PDF."
+    )
+    # --- NEW ---
+    server_group.add_argument(
+        "--image-server-png-dir", type=str, default="/",
+        help="Relative path (from --image-server-path-prefix) to the directory containing the source PNG files."
+    )
+    
+    # --- MODIFIED: Renamed to be more generic ---
+    server_upload_group = parser.add_argument_group('Image Server Upload Options')
+    server_upload_group.add_argument(
+        "--upload-to-server", action="store_true",
+        help="Upload the generated PDF to the image server instead of saving it locally. "
+             "Requires --image-server-base-url."
+    )
+    # --- MODIFIED: Renamed from --output-server-path ---
+    server_upload_group.add_argument(
+        "--image-server-pdf-dir", type=str, default="/",
+        help="Subdirectory on the server (relative to --image-server-path-prefix) to upload the final PDF to."
+    )
+    server_upload_group.add_argument(
+        "--overwrite-server-file", action="store_true",
+        help="If a file with the same name exists on the server, overwrite it. Default is to fail."
+    )
+
+    # --- General Options ---
     general_group = parser.add_argument_group('General Options')
     general_group.add_argument("--debug", action="store_true", help="Enable detailed debug messages.")
     general_group.add_argument("--skip-basic-land", action="store_true", help="Skip basic lands.")
     general_group.add_argument("--sort", action="store_true", help="Sort PNGs alphabetically (for directory scan mode or if --png-out-dir copies all from dir).")
     general_group.add_argument("--cameo", action="store_true", help="Use PIL-based PDF generation (modeled after create_pdf.py/utilities.py) when --output-format is pdf. This mode uses fixed layouts from an internal 'layouts.json' equivalent and ignores most page/layout/cut-line options. Currently best supports --paper-type letter or a4 (if in layouts). EXPECTS an 'assets' FOLDER with registration mark images (e.g., 'letter_registration.jpg') next to the script for proper Cameo output.")
-    general_group.add_argument("--basic-land-set", type=str, default=None, help="Comma-separated list of set codes to filter basic lands by (e.g., 'lea,unh,neo'). If specified, only basic lands from these sets will be considered. Affects random selection of basic lands from --deck-list.")
-    general_group.add_argument(
-        "--basic-land-set-mode", type=str, default="prefer", choices=["prefer", "force"],
-        help="Controls how --basic-land-set is applied. 'prefer' will use the specified sets if available, but fall back to any set if not. "
-             "'force' will fail if no cards from the specified sets are found."
-    )
-    general_group.add_argument(
-        "--spell-set", type=str, default=None,
-        help="Comma-separated list of set codes to filter non-land cards ('spells') by. "
-             "Affects random selection for generic card requests (e.g., '4 Sol Ring')."
-    )
-    general_group.add_argument(
-        "--spell-set-mode", type=str, default="prefer", choices=["prefer", "force"],
-        help="Controls how --spell-set is applied. 'prefer' will use the specified sets if available, but fall back to any set if not. "
-             "'force' will fail if no cards from the specified sets are found."
-    )
+    general_group.add_argument("--basic-land-set", type=str, default=None, help="Comma-separated list of set codes to filter basic lands by (e.g., 'lea,unh,neo'). Behavior is controlled by --basic-land-set-mode.")
+    general_group.add_argument("--basic-land-set-mode", type=str, default="prefer", choices=["prefer", "force"], help="Controls how --basic-land-set is applied. 'prefer' will use the specified sets if available, but fall back to any set if not. 'force' will fail if no cards from the specified sets are found.")
+    general_group.add_argument("--spell-set", type=str, default=None, help="Comma-separated list of set codes to filter non-land cards ('spells') by. Behavior is controlled by --spell-set-mode.")
+    general_group.add_argument("--spell-set-mode", type=str, default="prefer", choices=["prefer", "force"], help="Controls how --spell-set is applied. 'prefer' will use the specified sets if available, but fall back to any set if not. 'force' will fail if no cards from the specified sets are found.")
+
+    # --- Page & Layout Options ---
     pg_layout_group = parser.add_argument_group('Page and Layout Options (for PDF/PNG grid output; largely IGNORED by --cameo mode)')
     pg_layout_group.add_argument("--paper-type", type=str, default="letter", choices=["letter", "legal"], help="Conceptual paper type. For ReportLab PDF: Letter 3x3, Legal 3x4. For --cameo PDF: must match a layout like 'letter'.")
     pg_layout_group.add_argument("--page-margin", type=str, default="5mm", help="Margin around the grid (e.g., '5mm', '0.25in', '10px').")
@@ -749,6 +849,8 @@ def main():
     pg_layout_group.add_argument("--page-bg-color", type=str, default="white", help="Overall page/canvas background color.")
     pg_layout_group.add_argument("--image-cell-bg-color", type=str, default="black", help="Background color directly behind transparent image parts.")
     pg_layout_group.add_argument("--cameo-label-font-size", type=int, default=32, help="[Cameo Mode Only] Font size for the page label. This is a base size in points, which is then scaled by DPI. A reasonable range is 24-48. Must be between 8 and 96.")
+    
+    # --- Cut Line Options ---
     cut_line_group = parser.add_argument_group('Cut Line Options (for PDF/PNG grid output; IGNORED by --cameo mode)')
     cut_line_group.add_argument( "--cut-lines", action="store_true", help="Enable drawing of cut lines.")
     cut_line_group.add_argument( "--cut-line-length", type=str, default="3mm", help="Length of cut lines (e.g., '3mm', '0.1in', '5px').")
@@ -758,28 +860,39 @@ def main():
 
     args = parser.parse_args()
 
-    # --- Mode Validation (unchanged) ---
-    if not args.png_dir and not args.image_server_base_url: parser.error("Either --png-dir or --image-server-base-url must be specified.")
-    if args.png_dir and args.image_server_base_url: parser.error("Cannot specify both --png-dir and --image-server-base-url. Choose one source.")
-    if args.png_out_dir and not args.deck_list: parser.error("--png-out-dir requires --deck-list to be specified.")
+    # --- Mode Validation ---
+    if not args.png_dir and not args.image_server_base_url:
+        parser.error("Either --png-dir or --image-server-base-url must be specified.")
+    if args.png_dir and args.image_server_base_url:
+        parser.error("Cannot specify both --png-dir and --image-server-base-url. Choose one source.")
+    if args.png_out_dir and not args.deck_list:
+        parser.error("--png-out-dir requires --deck-list to be specified.")
     if args.png_out_dir and (args.output_file or args.output_format != "pdf"):
         if args.output_file: print("Warning: --output-file is ignored when --png-out-dir is used.")
         if args.output_format != "pdf": print(f"Warning: --output-format {args.output_format} is ignored when --png-out-dir is used.")
-    if args.cameo and args.output_format != "pdf": print("Warning: --cameo option is only applicable when --output-format is 'pdf'. Ignoring --cameo."); args.cameo = False
-    if not (8 <= args.cameo_label_font_size <= 96): parser.error("--cameo-label-font-size must be between 8 and 96.")
+    if args.cameo and args.output_format != "pdf":
+        print("Warning: --cameo option is only applicable when --output-format is 'pdf'. Ignoring --cameo."); args.cameo = False
+    if not (8 <= args.cameo_label_font_size <= 96):
+        parser.error("--cameo-label-font-size must be between 8 and 96.")
+    
     if args.upload_to_server:
-        if not args.image_server_base_url: parser.error("--upload-to-server requires --image-server-base-url.")
-        if not args.output_server_path: parser.error("--upload-to-server requires --output-server-path.")
-        if args.output_format != "pdf": parser.error("--upload-to-server is only supported for 'pdf' output format.")
-        if args.png_out_dir: parser.error("--upload-to-server cannot be used with --png-out-dir.")
+        if not args.image_server_base_url:
+            parser.error("--upload-to-server requires --image-server-base-url.")
+        if args.output_format != "pdf":
+            parser.error("--upload-to-server is only supported for 'pdf' output format.")
+        if args.png_out_dir:
+            parser.error("--upload-to-server cannot be used with --png-out-dir.")
 
-    # --- Initial Validations (unchanged) ---
-    if args.png_dir and not os.path.isdir(args.png_dir): print(f"Error: PNG directory '{args.png_dir}' not found."); return
-    if args.deck_list and not os.path.isfile(args.deck_list): print(f"Error: Deck list file '{args.deck_list}' not found."); return
-    try: validated_paper_type = parse_paper_type(args.paper_type)
-    except ValueError as e: print(f"Error: {e}"); return
+    # --- Initial Validations ---
+    if args.png_dir and not os.path.isdir(args.png_dir):
+        print(f"Error: PNG directory '{args.png_dir}' not found."); return
+    if args.deck_list and not os.path.isfile(args.deck_list):
+        print(f"Error: Deck list file '{args.deck_list}' not found."); return
+    try:
+        validated_paper_type = parse_paper_type(args.paper_type)
+    except ValueError as e:
+        print(f"Error: {e}"); return
 
-    # --- MODIFIED: Parse both set filters ---
     parsed_basic_land_sets: Optional[List[str]] = None
     if args.basic_land_set:
         parsed_basic_land_sets = [s.strip().lower() for s in args.basic_land_set.split(',') if s.strip()]
@@ -791,16 +904,30 @@ def main():
         parsed_spell_sets = [s.strip().lower() for s in args.spell_set.split(',') if s.strip()]
         if args.debug and parsed_spell_sets:
             print(f"DEBUG: Parsed spell set filter: {parsed_spell_sets}")
-    # --- END MODIFICATION ---
 
-    # --- Discover images from source (unchanged) ---
+    # --- Discover images from source ---
     print("--- Discovering Images ---")
-    if args.image_server_base_url: print(f"Using web server: {args.image_server_base_url}")
-    else: print(f"Using local directory: {args.png_dir}")
-    all_cards_map = discover_images(png_dir=args.png_dir, image_server_base_url=args.image_server_base_url, image_server_path_prefix=args.image_server_path_prefix, debug=args.debug)
-    if not all_cards_map: print("No images found in source. Exiting."); return
+    png_source_path_on_server = "/"
+    if args.image_server_base_url:
+        print(f"Using web server: {args.image_server_base_url}")
+        # --- MODIFIED: Construct the full path for fetching PNGs ---
+        # Cleanly join path components, removing extra slashes and handling empty parts.
+        png_path_parts = [p.strip('/') for p in [args.image_server_path_prefix, args.image_server_png_dir] if p.strip('/')]
+        png_source_path_on_server = '/' + '/'.join(png_path_parts)
+    else:
+        print(f"Using local directory: {args.png_dir}")
+    
+    # Pass the fully constructed path to the discovery function.
+    all_cards_map = discover_images(
+        png_dir=args.png_dir,
+        image_server_base_url=args.image_server_base_url,
+        image_server_path_prefix=png_source_path_on_server,
+        debug=args.debug
+    )
+    if not all_cards_map:
+        print("No images found in source. Exiting."); return
 
-    # --- Determine list of images to process (unchanged logic flow, but calls new functions) ---
+    # --- Determine list of images to process ---
     image_sources_to_process: List[ImageSource] = []
     missing_cards_from_deck: List[str] = []
     try:
@@ -813,10 +940,13 @@ def main():
                 parsed_spell_sets, args.spell_set_mode,
                 args.debug
             )
-
-            if missing_cards_from_deck: write_missing_cards_file(args.deck_list, missing_cards_from_deck)
-            if not image_sources_to_process and not args.png_out_dir: print("No images to print (after potential skips). Exiting."); return
-            if image_sources_to_process: print(f"Prepared {len(image_sources_to_process)} image instances (excluding any skipped basic lands).")
+            if missing_cards_from_deck:
+                write_missing_cards_file(args.deck_list, missing_cards_from_deck)
+            if not image_sources_to_process and not args.png_out_dir:
+                print("No images to print (after potential skips). Exiting."); return
+            if image_sources_to_process:
+                print(f"Prepared {len(image_sources_to_process)} image instances (excluding any skipped basic lands).")
+        
         elif not args.png_out_dir:
             print("\n--- Directory Scan Mode (for PDF/PNG grid) ---")
             skipped_basics_count = 0
@@ -829,44 +959,84 @@ def main():
                     if norm_name in BASIC_LAND_NAMES: skipped_basics_count += 1
                     else: non_basic_sources.append(source)
                 image_sources_to_process = non_basic_sources
-            else: image_sources_to_process = all_available_sources
-            if args.skip_basic_land and skipped_basics_count > 0: print(f"  Skipped {skipped_basics_count} basic land files.")
-            if not image_sources_to_process: print(f"No suitable PNGs found. Exiting."); return
-            if args.sort: image_sources_to_process.sort(key=lambda x: x.original)
+            else:
+                image_sources_to_process = all_available_sources
+            if args.skip_basic_land and skipped_basics_count > 0:
+                print(f"  Skipped {skipped_basics_count} basic land files.")
+            if not image_sources_to_process:
+                print(f"No suitable PNGs found. Exiting."); return
+            if args.sort:
+                image_sources_to_process.sort(key=lambda x: x.original)
             print(f"Found {len(image_sources_to_process)} total PNGs ({'sorted' if args.sort else 'unsorted'}).")
-        elif args.png_out_dir and not args.deck_list: print("Error: --png-out-dir specified without a --deck-list. Nothing to do."); return
+        
+        elif args.png_out_dir and not args.deck_list:
+            print("Error: --png-out-dir specified without a --deck-list. Nothing to do."); return
 
-        # --- Perform Action: Copy PNGs or Generate Grid (unchanged) ---
+        # --- Perform Action: Copy PNGs or Generate Grid ---
         if args.png_out_dir:
-            if not args.deck_list: print("Critical Error: --png-out-dir mode reached without a deck list. Please report this bug."); return
-            if image_sources_to_process: copy_deck_pngs(image_sources_to_process, args.png_out_dir, args.debug)
-            elif not missing_cards_from_deck: print("No images to copy (deck list may have contained only skipped basic lands or was empty).")
+            if not args.deck_list:
+                print("Critical Error: --png-out-dir mode reached without a deck list. Please report this bug."); return
+            if image_sources_to_process:
+                copy_deck_pngs(image_sources_to_process, args.png_out_dir, args.debug)
+            elif not missing_cards_from_deck:
+                print("No images to copy (deck list may have contained only skipped basic lands or was empty).")
         else:
-            if not image_sources_to_process: print("No images to generate grid output. Exiting."); return
-            if args.output_file: base_output_filename_final = args.output_file
-            elif args.deck_list: dl_bn = os.path.splitext(os.path.basename(args.deck_list))[0]; dl_dir = os.path.dirname(args.deck_list); base_output_filename_final = os.path.join(dl_dir, dl_bn) if dl_dir else dl_bn
-            else: base_output_filename_final = "MtgProxyOutput"
+            if not image_sources_to_process:
+                print("No images to generate grid output. Exiting."); return
+            
+            base_output_filename_final: str
+            if args.output_file:
+                base_output_filename_final = args.output_file
+            elif args.deck_list:
+                dl_bn = os.path.splitext(os.path.basename(args.deck_list))[0]
+                dl_dir = os.path.dirname(args.deck_list)
+                base_output_filename_final = os.path.join(dl_dir, dl_bn) if dl_dir else dl_bn
+            else:
+                base_output_filename_final = "MtgProxyOutput"
+
             name_for_pdf_label = os.path.basename(base_output_filename_final)
+
             if args.output_format == "pdf":
                 output_pdf_filename = f"{os.path.basename(base_output_filename_final)}.pdf"
                 pdf_buffer = None
-                if args.upload_to_server: pdf_buffer = io.BytesIO(); output_target = pdf_buffer
-                else: output_target = f"{base_output_filename_final}.pdf"
-                if args.cameo: create_pdf_cameo_style(image_sources=image_sources_to_process, output_path_or_buffer=output_target, paper_type_arg=validated_paper_type, target_dpi=args.dpi, image_cell_bg_color_str=args.image_cell_bg_color, pdf_name_label=name_for_pdf_label, label_font_size_base=args.cameo_label_font_size, debug=args.debug)
-                else: create_pdf_grid(image_sources=image_sources_to_process, output_path_or_buffer=output_target, paper_type_str=validated_paper_type, image_spacing_pixels=args.image_spacing_pixels, dpi=args.dpi, page_margin_str=args.page_margin, page_background_color_str=args.page_bg_color, image_cell_background_color_str=args.image_cell_bg_color, cut_lines=args.cut_lines, cut_line_length_str=args.cut_line_length, cut_line_color_str=args.cut_line_color, cut_line_width_pt=args.cut_line_width_pt, debug=args.debug)
+                if args.upload_to_server:
+                    pdf_buffer = io.BytesIO()
+                    output_target = pdf_buffer
+                else:
+                    output_target = f"{base_output_filename_final}.pdf"
+                
+                if args.cameo:
+                    create_pdf_cameo_style(image_sources=image_sources_to_process, output_path_or_buffer=output_target, paper_type_arg=validated_paper_type, target_dpi=args.dpi, image_cell_bg_color_str=args.image_cell_bg_color, pdf_name_label=name_for_pdf_label, label_font_size_base=args.cameo_label_font_size, debug=args.debug)
+                else:
+                    create_pdf_grid(image_sources=image_sources_to_process, output_path_or_buffer=output_target, paper_type_str=validated_paper_type, image_spacing_pixels=args.image_spacing_pixels, dpi=args.dpi, page_margin_str=args.page_margin, page_background_color_str=args.page_bg_color, image_cell_background_color_str=args.image_cell_bg_color, cut_lines=args.cut_lines, cut_line_length_str=args.cut_line_length, cut_line_color_str=args.cut_line_color, cut_line_width_pt=args.cut_line_width_pt, debug=args.debug)
+                
                 if args.upload_to_server and pdf_buffer:
                     print("\n--- Uploading PDF to Server ---")
-                    path_parts = [args.output_server_path.strip('/'), output_pdf_filename.lstrip('/')]; full_path = "/".join(p for p in path_parts if p)
-                    if not full_path.startswith('/'): full_path = '/' + full_path
-                    upload_url = f"{args.image_server_base_url.rstrip('/')}{full_path}"
+                    # --- MODIFIED: Construct the full upload URL ---
+                    # Join the base prefix, the relative PDF directory, and the filename.
+                    pdf_path_parts = [p.strip('/') for p in [args.image_server_path_prefix, args.image_server_pdf_dir, output_pdf_filename] if p.strip('/')]
+                    full_path_for_upload = '/' + '/'.join(pdf_path_parts)
+                    
+                    # Combine the base URL with the full path.
+                    upload_url = f"{args.image_server_base_url.rstrip('/')}{full_path_for_upload}"
+
                     if not args.overwrite_server_file:
-                        if check_server_file_exists(upload_url, args.debug): print(f"Error: File already exists at {upload_url}."); print("Use --overwrite-server-file to replace it."); return
-                    pdf_bytes = pdf_buffer.getvalue(); upload_file_to_server(upload_url, pdf_bytes, 'application/pdf', args.debug)
-            elif args.output_format == "png": create_png_output(image_files=image_sources_to_process, base_output_filename=base_output_filename_final, paper_type_str=validated_paper_type, dpi=args.dpi, image_spacing_pixels=args.image_spacing_pixels, page_margin_str=args.page_margin, page_background_color_str=args.page_bg_color, image_cell_background_color_str=args.image_cell_bg_color, cut_lines=args.cut_lines, cut_line_length_str=args.cut_line_length, cut_line_color_str=args.cut_line_color, cut_line_width_px=args.cut_line_width_px, debug=args.debug)
-            else: print(f"Error: Unknown output format '{args.output_format}'.")
+                        if check_server_file_exists(upload_url, args.debug):
+                            print(f"Error: File already exists at {upload_url}.")
+                            print("Use --overwrite-server-file to replace it.")
+                            return
+                    
+                    pdf_bytes = pdf_buffer.getvalue()
+                    upload_file_to_server(upload_url, pdf_bytes, 'application/pdf', args.debug)
+
+            elif args.output_format == "png":
+                create_png_output(image_files=image_sources_to_process, base_output_filename=base_output_filename_final, paper_type_str=validated_paper_type, dpi=args.dpi, image_spacing_pixels=args.image_spacing_pixels, page_margin_str=args.page_margin, page_background_color_str=args.page_bg_color, image_cell_background_color_str=args.image_cell_bg_color, cut_lines=args.cut_lines, cut_line_length_str=args.cut_line_length, cut_line_color_str=args.cut_line_color, cut_line_width_px=args.cut_line_width_px, debug=args.debug)
+            else:
+                print(f"Error: Unknown output format '{args.output_format}'.")
     finally:
         cleanup_temp_files()
-        for img_source in image_sources_to_process: img_source.cleanup()
+        for img_source in image_sources_to_process:
+            img_source.cleanup()
 
 if __name__ == "__main__":
     main()
