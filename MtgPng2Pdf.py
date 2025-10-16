@@ -504,6 +504,48 @@ def parse_variant_filename(filename: str) -> Tuple[str, Optional[str], Optional[
     # treat the whole thing as the name. This handles "Sol Ring.png".
     return normalize_card_name(basename_no_ext), None, None
 
+def select_cards_with_priority_and_cycling(
+    preferred_pool: List[ImageSource],
+    general_pool: List[ImageSource],
+    num_to_select: int,
+    debug: bool = False
+) -> List[ImageSource]:
+    """
+    Selects cards by maximizing variety, prioritizing the preferred pool.
+    It exhausts all unique cards (preferred then general) before cycling.
+    """
+    if not preferred_pool and not general_pool:
+        return []
+
+    selected: List[ImageSource] = []
+    
+    # Shuffle pools to ensure random selection within priority tiers
+    shuffled_preferred = preferred_pool[:]
+    random.shuffle(shuffled_preferred)
+    
+    shuffled_general = general_pool[:]
+    random.shuffle(shuffled_general)
+    
+    # The master list of unique sources, in order of priority
+    master_selection_order = shuffled_preferred + shuffled_general
+    
+    if not master_selection_order:
+        return []
+
+    if debug:
+        print(f"DEBUG: Master selection order for this card has {len(master_selection_order)} unique versions.")
+        if shuffled_preferred:
+            print(f"DEBUG:   - Preferred pool size: {len(shuffled_preferred)}")
+        if shuffled_general:
+            print(f"DEBUG:   - General pool size: {len(shuffled_general)}")
+
+    pool_size = len(master_selection_order)
+    for i in range(num_to_select):
+        # Cycle through the master list to select the required number of cards
+        selected.append(master_selection_order[i % pool_size])
+        
+    return selected
+
 def process_deck_list(
     deck_list_path: str,
     all_cards_map: Dict[str, List[ImageSource]],
@@ -512,14 +554,18 @@ def process_deck_list(
     basic_land_set_mode: str,
     spell_sets_filter: Optional[List[str]],
     spell_set_mode: str,
+    basic_land_sets_exclude: Optional[List[str]],
+    spell_sets_exclude: Optional[List[str]],
     debug: bool = False
-) -> Tuple[List[ImageSource], List[str]]:
+) -> Tuple[List[ImageSource], List[str], Dict[str, Dict[str, int]]]:
     """
     Processes a deck list, aggregating card counts before finding images.
+    Returns the list of images, missing cards, and a manifest of selected cards.
     """
     images_to_print: List[ImageSource] = []
     missing_card_names: List[str] = []
     skipped_basic_lands_count: Dict[str, int] = defaultdict(int)
+    selection_manifest: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
 
     fully_specific_requests: Dict[Tuple[str, str, str], int] = defaultdict(int)
     set_specific_requests: Dict[Tuple[str, str], int] = defaultdict(int)
@@ -558,30 +604,22 @@ def process_deck_list(
 
     except FileNotFoundError:
         print(f"Error: Deck list file not found: {deck_list_path}")
-        return [], []
+        return [], [], {}
 
     used_sources: Set[ImageSource] = set()
-    
-    # --- Helper function for card selection to ensure variety ---
-    def select_cards(pool: List[ImageSource], num_to_select: int) -> List[ImageSource]:
-        if not pool:
-            return []
-        
-        # Create a shuffled copy of the pool to pick from
-        shuffled_pool = pool[:]
-        random.shuffle(shuffled_pool)
-        
-        selected: List[ImageSource] = []
-        pool_size = len(shuffled_pool)
-        for i in range(num_to_select):
-            # Cycle through the shuffled pool to ensure maximum variety
-            selected.append(shuffled_pool[i % pool_size])
-        
-        return selected
+
+    # --- Helper to update manifest ---
+    def update_manifest(original_name: str, sources: List[ImageSource]):
+        for source in sources:
+            filename = os.path.basename(urllib.parse.unquote(source.original))
+            selection_manifest[original_name][filename] += 1
 
     # --- Pass 2: Process FULLY-SPECIFIC requests first ---
     if debug and fully_specific_requests: print("DEBUG: Processing fully-specific card requests...")
     for (normalized_name, set_code, collector_number), count in fully_specific_requests.items():
+        original_name = original_card_names.get(normalized_name, normalized_name)
+        log_line = f"{count}x '{original_name} ({set_code.upper()}) {collector_number}'"
+        
         found_source: Optional[ImageSource] = None
         for source in all_cards_map.get(normalized_name, []):
             _, f_set, f_num = parse_variant_filename(source.original)
@@ -589,12 +627,11 @@ def process_deck_list(
                 found_source = source
                 break
         
-        original_name = original_card_names.get(normalized_name, normalized_name)
-        log_line = f"{count}x '{original_name} ({set_code.upper()}) {collector_number}'"
-
         if found_source:
             if debug: print(f"DEBUG:   FOUND specific: {log_line}")
-            images_to_print.extend([found_source] * count)
+            selected_sources = [found_source] * count
+            images_to_print.extend(selected_sources)
+            update_manifest(original_name, selected_sources)
             used_sources.add(found_source)
         else:
             print(f"  NOT FOUND (Fully-Specific): {log_line}")
@@ -614,10 +651,11 @@ def process_deck_list(
             missing_card_names.append(f"{count}x {original_name} ({set_code.upper()})")
             continue
             
-        selected_sources = select_cards(candidate_pool, count)
+        selected_sources = select_cards_with_priority_and_cycling([], candidate_pool, count, debug)
         if debug: print(f"DEBUG:   Selected {len(selected_sources)} versions for {log_line_base}")
         
         images_to_print.extend(selected_sources)
+        update_manifest(original_name, selected_sources)
         for src in selected_sources: used_sources.add(src)
 
     # --- Pass 4: Process GENERIC requests ---
@@ -631,47 +669,81 @@ def process_deck_list(
             skipped_basic_lands_count[original_name] += count
             continue
             
-        available_sources = all_cards_map.get(normalized_name, [])
-        candidate_pool = [src for src in available_sources if src not in used_sources]
+        # 1. Get all available sources that haven't been used yet
+        candidate_pool = [src for src in all_cards_map.get(normalized_name, []) if src not in used_sources]
+        
+        # 2. Apply the global EXCLUSION filter first
+        current_sets_exclude = basic_land_sets_exclude if is_basic_land else spell_sets_exclude
+        if current_sets_exclude:
+            original_size = len(candidate_pool)
+            candidate_pool = [
+                src for src in candidate_pool 
+                if parse_variant_filename(src.original)[1] not in current_sets_exclude
+            ]
+            if debug and len(candidate_pool) < original_size:
+                print(f"DEBUG: Excluded {original_size - len(candidate_pool)} versions of '{original_name}' due to set exclusion.")
         
         if not candidate_pool:
-            print(f"  NOT FOUND (Generic): No available images for {count}x '{original_name}'")
+            print(f"  NOT FOUND (Generic): No available images for {count}x '{original_name}' after applying filters.")
             missing_card_names.append(f"{count}x {original_name}")
             continue
         
-        # Apply global set filters with preference/force logic
-        final_pool = candidate_pool
-        if is_basic_land and basic_land_sets_filter:
-            filtered_pool = [src for src in candidate_pool if parse_variant_filename(src.original)[1] in basic_land_sets_filter]
-            if filtered_pool:
-                final_pool = filtered_pool
-            elif basic_land_set_mode == 'force':
-                print(f"  NOT FOUND (Basic Land): No '{original_name}' matching required sets: {basic_land_sets_filter}")
-                missing_card_names.append(f"{count}x {original_name} (Set Mismatch: {basic_land_sets_filter})")
-                continue
-            else: # 'prefer' mode with no matches
-                 print(f"  WARN: No '{original_name}' found in preferred sets {basic_land_sets_filter}. Falling back to all available sets.")
-        
-        elif not is_basic_land and spell_sets_filter:
-            filtered_pool = [src for src in candidate_pool if parse_variant_filename(src.original)[1] in spell_sets_filter]
-            if filtered_pool:
-                final_pool = filtered_pool
-            elif spell_set_mode == 'force':
-                print(f"  NOT FOUND (Spell): No '{original_name}' matching required sets: {spell_sets_filter}")
-                missing_card_names.append(f"{count}x {original_name} (Set Mismatch: {spell_sets_filter})")
-                continue
-            else: # 'prefer' mode with no matches
-                print(f"  WARN: No '{original_name}' found in preferred sets {spell_sets_filter}. Falling back to all available sets.")
+        # 3. Determine INCLUSION filters and mode
+        current_sets_filter = basic_land_sets_filter if is_basic_land else spell_sets_filter
+        current_set_mode = basic_land_set_mode if is_basic_land else spell_set_mode
 
-        selected_sources = select_cards(final_pool, count)
+        preferred_pool: List[ImageSource] = []
+        general_pool: List[ImageSource] = []
+
+        if current_sets_filter:
+            for src in candidate_pool:
+                if parse_variant_filename(src.original)[1] in current_sets_filter:
+                    preferred_pool.append(src)
+                else:
+                    general_pool.append(src)
+            
+            if current_set_mode == 'force' and not preferred_pool:
+                print(f"  NOT FOUND (Spell): No '{original_name}' matching required sets: {current_sets_filter}")
+                missing_card_names.append(f"{count}x {original_name} (Set Mismatch: {current_sets_filter})")
+                continue
+            
+            if current_set_mode in ['prefer', 'minimum'] and not preferred_pool:
+                available_sets = {parse_variant_filename(s.original)[1] for s in candidate_pool if parse_variant_filename(s.original)[1]}
+                print(f"  WARN: No '{original_name}' found in preferred sets {current_sets_filter}. Available sets are: {sorted(list(available_sets))}. Falling back to all available sets.")
+            
+            selected_sources = select_cards_with_priority_and_cycling(preferred_pool, general_pool, count, debug)
+        else:
+            general_pool = candidate_pool
+            selected_sources = select_cards_with_priority_and_cycling([], general_pool, count, debug)
+
         images_to_print.extend(selected_sources)
+        update_manifest(original_name, selected_sources)
         for src in selected_sources: used_sources.add(src)
 
     if skipped_basic_lands_count:
         print("  Skipped the following basic lands:")
         for name, num in skipped_basic_lands_count.items():
             print(f"    - {num}x {name}")
-    return images_to_print, list(set(missing_card_names))
+            
+    return images_to_print, list(set(missing_card_names)), selection_manifest
+
+def print_selection_manifest(manifest: Dict[str, Dict[str, int]]):
+    """Prints a formatted summary of which card versions were selected."""
+    if not manifest:
+        return
+        
+    print("\n--- Card Selection Manifest ---")
+    
+    # Sort by original card name
+    for card_name in sorted(manifest.keys()):
+        versions = manifest[card_name]
+        total_count = sum(versions.values())
+        print(f"{total_count}x {card_name}:")
+        
+        # Sort by filename for consistent output
+        for filename, count in sorted(versions.items()):
+            print(f"  - {count}x {filename}")
+    print("-----------------------------")
 
 def write_missing_cards_file(deck_list_path: str, missing_cards: List[str]):
     if not missing_cards: return
@@ -845,9 +917,11 @@ def main():
     general_group.add_argument("--sort", action="store_true", help="Sort PNGs alphabetically (for directory scan mode or if --png-out-dir copies all from dir).")
     general_group.add_argument("--cameo", action="store_true", help="Use PIL-based PDF generation (modeled after create_pdf.py/utilities.py) when --output-format is pdf. This mode uses fixed layouts from an internal 'layouts.json' equivalent and ignores most page/layout/cut-line options. Currently best supports --paper-type letter or a4 (if in layouts). EXPECTS an 'assets' FOLDER with registration mark images (e.g., 'letter_registration.jpg') next to the script for proper Cameo output.")
     general_group.add_argument("--basic-land-set", type=str, default=None, help="Comma-separated list of set codes to filter basic lands by (e.g., 'lea,unh,neo'). Behavior is controlled by --basic-land-set-mode.")
-    general_group.add_argument("--basic-land-set-mode", type=str, default="prefer", choices=["prefer", "force"], help="Controls how --basic-land-set is applied. 'prefer' will use the specified sets if available, but fall back to any set if not. 'force' will fail if no cards from the specified sets are found.")
+    general_group.add_argument("--basic-land-set-mode", type=str, default="prefer", choices=["prefer", "force", "minimum"], help="Controls how --basic-land-set is applied. 'prefer' will use the specified sets if available, but fall back to any set if not. 'force' will fail if no cards from the specified sets are found. 'minimum' will use at least one from the specified sets and fallback for the rest.")
     general_group.add_argument("--spell-set", type=str, default=None, help="Comma-separated list of set codes to filter non-land cards ('spells') by. Behavior is controlled by --spell-set-mode.")
-    general_group.add_argument("--spell-set-mode", type=str, default="prefer", choices=["prefer", "force"], help="Controls how --spell-set is applied. 'prefer' will use the specified sets if available, but fall back to any set if not. 'force' will fail if no cards from the specified sets are found.")
+    general_group.add_argument("--spell-set-mode", type=str, default="prefer", choices=["prefer", "force", "minimum"], help="Controls how --spell-set is applied. 'prefer' will use the specified sets if available, but fall back to any set if not. 'force' will fail if no cards from the specified sets are found. 'minimum' will use at least one from the specified sets and fallback for the rest.")
+    general_group.add_argument("--basic-land-set-exclude", type=str, default=None, help="Comma-separated list of set codes to EXCLUDE for basic lands (e.g., 'unh,ust').")
+    general_group.add_argument("--spell-set-exclude", type=str, default=None, help="Comma-separated list of set codes to EXCLUDE for non-land cards ('spells').")
 
     # --- Page & Layout Options ---
     pg_layout_group = parser.add_argument_group('Page and Layout Options (for PDF/PNG grid output; largely IGNORED by --cameo mode)')
@@ -914,6 +988,18 @@ def main():
         if args.debug and parsed_spell_sets:
             print(f"DEBUG: Parsed spell set filter: {parsed_spell_sets}")
 
+    parsed_basic_land_sets_exclude: Optional[List[str]] = None
+    if args.basic_land_set_exclude:
+        parsed_basic_land_sets_exclude = [s.strip().lower() for s in args.basic_land_set_exclude.split(',') if s.strip()]
+        if args.debug and parsed_basic_land_sets_exclude:
+            print(f"DEBUG: Parsed basic land set exclusion filter: {parsed_basic_land_sets_exclude}")
+
+    parsed_spell_sets_exclude: Optional[List[str]] = None
+    if args.spell_set_exclude:
+        parsed_spell_sets_exclude = [s.strip().lower() for s in args.spell_set_exclude.split(',') if s.strip()]
+        if args.debug and parsed_spell_sets_exclude:
+            print(f"DEBUG: Parsed spell set exclusion filter: {parsed_spell_sets_exclude}")
+
     # --- Discover images from source ---
     print("--- Discovering Images ---")
     png_source_path_on_server = "/"
@@ -939,18 +1025,26 @@ def main():
     # --- Determine list of images to process ---
     image_sources_to_process: List[ImageSource] = []
     missing_cards_from_deck: List[str] = []
+    
     try:
         if args.deck_list:
             print("\n--- Deck List Mode ---")
-            image_sources_to_process, missing_cards_from_deck = process_deck_list(
+            image_sources_to_process, missing_cards_from_deck, selection_manifest = process_deck_list(
                 args.deck_list, all_cards_map,
                 args.skip_basic_land, 
                 parsed_basic_land_sets, args.basic_land_set_mode,
                 parsed_spell_sets, args.spell_set_mode,
+                parsed_basic_land_sets_exclude,
+                parsed_spell_sets_exclude,
                 args.debug
             )
+            
             if missing_cards_from_deck:
                 write_missing_cards_file(args.deck_list, missing_cards_from_deck)
+
+            if selection_manifest:
+                print_selection_manifest(selection_manifest)
+
             if not image_sources_to_process and not args.png_out_dir:
                 print("No images to print (after potential skips). Exiting."); return
             if image_sources_to_process:
