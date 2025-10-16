@@ -521,6 +521,175 @@ def process_deck_list(
     missing_card_names: List[str] = []
     skipped_basic_lands_count: Dict[str, int] = defaultdict(int)
 
+    fully_specific_requests: Dict[Tuple[str, str, str], int] = defaultdict(int)
+    set_specific_requests: Dict[Tuple[str, str], int] = defaultdict(int)
+    generic_requests: Dict[str, int] = defaultdict(int)
+    original_card_names: Dict[str, str] = {}
+
+    # --- Pass 1: Parse and Aggregate all lines from the deck list ---
+    try:
+        with open(deck_list_path, 'r', encoding='utf-8') as f:
+            for line_num, line in enumerate(f, 1):
+                line = line.strip()
+
+                if not line or not line[0].isdigit():
+                    if debug and line:
+                        print(f"DEBUG: Skipping non-data line {line_num}: '{line}'")
+                    continue
+
+                entry = parse_moxfield_line(line)
+                if not entry:
+                    print(f"  Warning: Skipping malformed data line {line_num}: '{line}'")
+                    missing_card_names.append(line)
+                    continue
+
+                normalized_name = normalize_card_name(entry.card_name)
+                if normalized_name not in original_card_names:
+                    original_card_names[normalized_name] = entry.card_name
+
+                if entry.set_code and entry.collector_number:
+                    key = (normalized_name, entry.set_code, entry.collector_number)
+                    fully_specific_requests[key] += entry.count
+                elif entry.set_code:
+                    key = (normalized_name, entry.set_code)
+                    set_specific_requests[key] += entry.count
+                else:
+                    generic_requests[normalized_name] += entry.count
+
+    except FileNotFoundError:
+        print(f"Error: Deck list file not found: {deck_list_path}")
+        return [], []
+
+    used_sources: Set[ImageSource] = set()
+    
+    # --- Helper function for card selection to ensure variety ---
+    def select_cards(pool: List[ImageSource], num_to_select: int) -> List[ImageSource]:
+        if not pool:
+            return []
+        
+        # Create a shuffled copy of the pool to pick from
+        shuffled_pool = pool[:]
+        random.shuffle(shuffled_pool)
+        
+        selected: List[ImageSource] = []
+        pool_size = len(shuffled_pool)
+        for i in range(num_to_select):
+            # Cycle through the shuffled pool to ensure maximum variety
+            selected.append(shuffled_pool[i % pool_size])
+        
+        return selected
+
+    # --- Pass 2: Process FULLY-SPECIFIC requests first ---
+    if debug and fully_specific_requests: print("DEBUG: Processing fully-specific card requests...")
+    for (normalized_name, set_code, collector_number), count in fully_specific_requests.items():
+        found_source: Optional[ImageSource] = None
+        for source in all_cards_map.get(normalized_name, []):
+            _, f_set, f_num = parse_variant_filename(source.original)
+            if f_set == set_code and f_num == collector_number:
+                found_source = source
+                break
+        
+        original_name = original_card_names.get(normalized_name, normalized_name)
+        log_line = f"{count}x '{original_name} ({set_code.upper()}) {collector_number}'"
+
+        if found_source:
+            if debug: print(f"DEBUG:   FOUND specific: {log_line}")
+            images_to_print.extend([found_source] * count)
+            used_sources.add(found_source)
+        else:
+            print(f"  NOT FOUND (Fully-Specific): {log_line}")
+            missing_card_names.append(f"{count}x {original_name} ({set_code.upper()}) {collector_number}")
+
+    # --- Pass 3: Process SET-SPECIFIC requests ---
+    if debug and set_specific_requests: print("DEBUG: Processing set-specific card requests...")
+    for (normalized_name, set_code), count in set_specific_requests.items():
+        original_name = original_card_names.get(normalized_name, normalized_name)
+        log_line_base = f"{count}x '{original_name} ({set_code.upper()})'"
+
+        available_sources = all_cards_map.get(normalized_name, [])
+        candidate_pool = [src for src in available_sources if src not in used_sources and parse_variant_filename(src.original)[1] == set_code]
+        
+        if not candidate_pool:
+            print(f"  NOT FOUND (Set-Specific): No available images for {log_line_base}")
+            missing_card_names.append(f"{count}x {original_name} ({set_code.upper()})")
+            continue
+            
+        selected_sources = select_cards(candidate_pool, count)
+        if debug: print(f"DEBUG:   Selected {len(selected_sources)} versions for {log_line_base}")
+        
+        images_to_print.extend(selected_sources)
+        for src in selected_sources: used_sources.add(src)
+
+    # --- Pass 4: Process GENERIC requests ---
+    if debug and generic_requests: print("DEBUG: Processing generic card requests...")
+    for normalized_name, count in generic_requests.items():
+        original_name = original_card_names.get(normalized_name, normalized_name)
+
+        is_basic_land = normalized_name in BASIC_LAND_NAMES
+        if is_basic_land and skip_basic_land:
+            if debug: print(f"DEBUG: Skipping basic land: {count}x '{original_name}'")
+            skipped_basic_lands_count[original_name] += count
+            continue
+            
+        available_sources = all_cards_map.get(normalized_name, [])
+        candidate_pool = [src for src in available_sources if src not in used_sources]
+        
+        if not candidate_pool:
+            print(f"  NOT FOUND (Generic): No available images for {count}x '{original_name}'")
+            missing_card_names.append(f"{count}x {original_name}")
+            continue
+        
+        # Apply global set filters with preference/force logic
+        final_pool = candidate_pool
+        if is_basic_land and basic_land_sets_filter:
+            filtered_pool = [src for src in candidate_pool if parse_variant_filename(src.original)[1] in basic_land_sets_filter]
+            if filtered_pool:
+                final_pool = filtered_pool
+            elif basic_land_set_mode == 'force':
+                print(f"  NOT FOUND (Basic Land): No '{original_name}' matching required sets: {basic_land_sets_filter}")
+                missing_card_names.append(f"{count}x {original_name} (Set Mismatch: {basic_land_sets_filter})")
+                continue
+            else: # 'prefer' mode with no matches
+                 print(f"  WARN: No '{original_name}' found in preferred sets {basic_land_sets_filter}. Falling back to all available sets.")
+        
+        elif not is_basic_land and spell_sets_filter:
+            filtered_pool = [src for src in candidate_pool if parse_variant_filename(src.original)[1] in spell_sets_filter]
+            if filtered_pool:
+                final_pool = filtered_pool
+            elif spell_set_mode == 'force':
+                print(f"  NOT FOUND (Spell): No '{original_name}' matching required sets: {spell_sets_filter}")
+                missing_card_names.append(f"{count}x {original_name} (Set Mismatch: {spell_sets_filter})")
+                continue
+            else: # 'prefer' mode with no matches
+                print(f"  WARN: No '{original_name}' found in preferred sets {spell_sets_filter}. Falling back to all available sets.")
+
+        selected_sources = select_cards(final_pool, count)
+        images_to_print.extend(selected_sources)
+        for src in selected_sources: used_sources.add(src)
+
+    if skipped_basic_lands_count:
+        print("  Skipped the following basic lands:")
+        for name, num in skipped_basic_lands_count.items():
+            print(f"    - {num}x {name}")
+    return images_to_print, list(set(missing_card_names))
+
+def process_deck_list(
+    deck_list_path: str,
+    all_cards_map: Dict[str, List[ImageSource]],
+    skip_basic_land: bool,
+    basic_land_sets_filter: Optional[List[str]],
+    basic_land_set_mode: str,
+    spell_sets_filter: Optional[List[str]],
+    spell_set_mode: str,
+    debug: bool = False
+) -> Tuple[List[ImageSource], List[str]]:
+    """
+    Processes a deck list, aggregating card counts before finding images.
+    """
+    images_to_print: List[ImageSource] = []
+    missing_card_names: List[str] = []
+    skipped_basic_lands_count: Dict[str, int] = defaultdict(int)
+
     # --- MODIFIED: Use dictionaries to aggregate counts from multiple decklist lines ---
     fully_specific_requests: Dict[Tuple[str, str, str], int] = defaultdict(int)
     set_specific_requests: Dict[Tuple[str, str], int] = defaultdict(int)
