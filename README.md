@@ -33,7 +33,10 @@ MtgPng2Pdf.py [-h] [--png-dir PNG_DIR] [--deck-list DECK_LIST]
               [--image-server-path-prefix IMAGE_SERVER_PATH_PREFIX]
               [--image-server-png-dir IMAGE_SERVER_PNG_DIR]
               [--upload-to-server]
-              [--image-server-pdf-dir IMAGE_SERVER_PDF_DIR]
+  --image-server-deck-dir IMAGE_SERVER_DECK_DIR
+                        Subdirectory on the server (relative to --image-
+                        server-path-prefix) to upload the final PDF or PNG to.
+                        (default: /)
               [--overwrite-server-file] [--debug] [--skip-basic-land]
               [--sort] [--cameo] [--basic-land-set BASIC_LAND_SET]
               [--basic-land-set-mode {prefer,force,minimum}]
@@ -117,23 +120,23 @@ python3 MtgPng2Pdf.py --png-dir card_images/m15ub --output-format pdf --output-f
 ### Force art from specific sets
 This command will only use card art from the specified sets. If a card is not available in one of these sets, it will be skipped.
 ```bash
-python3 MtgPng2Pdf.py --image-server-base-url http://mtgproxy:4242 --image-server-path-prefix /local_art --image-server-png-dir card_images/7th/realesrgan_x2plus-4x/ --deck-list ../scry2cc/smashville-zoo.txt --cameo --cameo-label-font-size 48 --upload-to-server --image-server-pdf-dir decks --overwrite-server-file --spell-set lea,leb,arn,atq,3ed,leg,drk,fem,4ed,ice,chr,hml,all --spell-set-mode force
+python3 MtgPng2Pdf.py --image-server-base-url http://mtgproxy:4242 --image-server-path-prefix /local_art --image-server-png-dir card_images/7th/realesrgan_x2plus-4x/ --deck-list ../scry2cc/smashville-zoo.txt --cameo --cameo-label-font-size 48 --upload-to-server --image-server-deck-dir decks --overwrite-server-file --spell-set lea,leb,arn,atq,3ed,leg,drk,fem,4ed,ice,chr,hml,all --spell-set-mode force
 ```
 
 ### Prioritize art from specific sets
 This command will prioritize art from the specified sets, and if there are multiple art options, it will prefer duplicating the art from the sets that appear earlier in the list.
 ```bash
-python3 MtgPng2Pdf.py --image-server-base-url http://mtgproxy:4242 --image-server-path-prefix /local_art --image-server-png-dir card_images/7th/realesrgan_x2plus-4x/ --deck-list ../scry2cc/smashville-zoo.txt --cameo --cameo-label-font-size 48 --upload-to-server --image-server-pdf-dir decks --overwrite-server-file --spell-set lea,leb,arn,atq,3ed,leg,drk,fem,4ed,ice,chr,hml,all --spell-set-mode prefer
+python3 MtgPng2Pdf.py --image-server-base-url http://mtgproxy:4242 --image-server-path-prefix /local_art --image-server-png-dir card_images/7th/realesrgan_x2plus-4x/ --deck-list ../scry2cc/smashville-zoo.txt --cameo --cameo-label-font-size 48 --upload-to-server --image-server-deck-dir decks --overwrite-server-file --spell-set lea,leb,arn,atq,3ed,leg,drk,fem,4ed,ice,chr,hml,all --spell-set-mode prefer
 ```
 
 ### Per-card set override
 This command forces the use of the Ice Age version of Disenchant.
 ```bash
-python3 MtgPng2Pdf.py --image-server-base-url http://mtgproxy:4242 --image-server-path-prefix /local_art --image-server-png-dir card_images/7th/realesrgan_x2plus-4x/ --deck-list ../scry2cc/smashville-zoo.txt --cameo --cameo-label-font-size 48 --upload-to-server --image-server-pdf-dir decks --overwrite-server-file --spell-set lea,leb,arn,atq,3ed,leg,drk,fem,4ed,ice,chr,hml,all --spell-set-mode force --card-set "Disenchant:ice:force"
+python3 MtgPng2Pdf.py --image-server-base-url http://mtgproxy:4242 --image-server-path-prefix /local_art --image-server-png-dir card_images/7th/realesrgan_x2plus-4x/ --deck-list ../scry2cc/smashville-zoo.txt --cameo --cameo-label-font-size 48 --upload-to-server --image-server-deck-dir decks --overwrite-server-file --spell-set lea,leb,arn,atq,3ed,leg,drk,fem,4ed,ice,chr,hml,all --spell-set-mode force --card-set "Disenchant:ice:force"
 ```
 
 ### Art variant preference
 This command specifies the preferred order of art variants for Strip Mine from the Antiquities set.
 ```bash
-python3 MtgPng2Pdf.py --image-server-base-url http://mtgproxy:4242 --image-server-path-prefix /local_art --image-server-png-dir card_images/7th/realesrgan_x2plus-4x/ --deck-list ../scry2cc/smashville-zoo.txt --cameo --cameo-label-font-size 48 --upload-to-server --image-server-pdf-dir decks --overwrite-server-file --spell-set lea,leb,arn,atq,3ed,leg,drk,fem,4ed,ice,chr,hml,all --spell-set-mode force --card-set "Strip Mine:atq-c,atq-a,atq-b:force"
+python3 MtgPng2Pdf.py --image-server-base-url http://mtgproxy:4242 --image-server-path-prefix /local_art --image-server-png-dir card_images/7th/realesrgan_x2plus-4x/ --deck-list ../scry2cc/smashville-zoo.txt --cameo --cameo-label-font-size 48 --upload-to-server --image-server-deck-dir decks --overwrite-server-file --spell-set lea,leb,arn,atq,3ed,leg,drk,fem,4ed,ice,chr,hml,all --spell-set-mode force --card-set "Strip Mine:atq-c,atq-a,atq-b:force"
 ```

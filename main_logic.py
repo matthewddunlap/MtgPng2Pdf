@@ -61,8 +61,8 @@ def main():
     )
     # --- MODIFIED: Renamed from --output-server-path ---
     server_upload_group.add_argument(
-        "--image-server-pdf-dir", type=str, default="/",
-        help="Subdirectory on the server (relative to --image-server-path-prefix) to upload the final PDF to."
+        "--image-server-deck-dir", type=str, default="/",
+        help="Subdirectory on the server (relative to --image-server-path-prefix) to upload the final PDF or PNG to."
     )
     server_upload_group.add_argument(
         "--overwrite-server-file", action="store_true",
@@ -121,8 +121,7 @@ def main():
     if args.upload_to_server:
         if not args.image_server_base_url:
             parser.error("--upload-to-server requires --image-server-base-url.")
-        if args.output_format != "pdf":
-            parser.error("--upload-to-server is only supported for 'pdf' output format.")
+
         if args.png_out_dir:
             parser.error("--upload-to-server cannot be used with --png-out-dir.")
 
@@ -283,7 +282,7 @@ def main():
                     print("\n--- Uploading PDF to Server ---")
                     # --- MODIFIED: Construct the full upload URL ---
                     # Join the base prefix, the relative PDF directory, and the filename.
-                    pdf_path_parts = [p.strip('/') for p in [args.image_server_path_prefix, args.image_server_pdf_dir, output_pdf_filename] if p.strip('/')]
+                    pdf_path_parts = [p.strip('/') for p in [args.image_server_path_prefix, args.image_server_deck_dir, output_pdf_filename] if p.strip('/')]
                     full_path_for_upload = '/' + '/'.join(pdf_path_parts)
                     
                     # Combine the base URL with the full path.
@@ -299,7 +298,13 @@ def main():
                     upload_file_to_server(upload_url, pdf_bytes, 'application/pdf', args.debug)
 
             elif args.output_format == "png":
-                create_png_output(image_files=image_sources_to_process, base_output_filename=base_output_filename_final, paper_type_str=validated_paper_type, dpi=args.dpi, image_spacing_pixels=args.image_spacing_pixels, page_margin_str=args.page_margin, page_background_color_str=args.page_bg_color, image_cell_background_color_str=args.image_cell_bg_color, cut_lines=args.cut_lines, cut_line_length_str=args.cut_line_length, cut_line_color_str=args.cut_line_color, cut_line_width_px=args.cut_line_width_px, debug=args.debug)
+                if args.upload_to_server:
+                    # We will generate multiple pages in memory and upload them sequentially
+                    base_output_filename = os.path.basename(base_output_filename_final)
+                    create_png_output(image_sources=image_sources_to_process, output_path_or_buffer=base_output_filename, paper_type_str=validated_paper_type, dpi=args.dpi, image_spacing_pixels=args.image_spacing_pixels, page_margin_str=args.page_margin, page_background_color_str=args.page_bg_color, image_cell_background_color_str=args.image_cell_bg_color, cut_lines=args.cut_lines, cut_line_length_str=args.cut_line_length, cut_line_color_str=args.cut_line_color, cut_line_width_px=args.cut_line_width_px, pdf_name_label=name_for_pdf_label, cameo_label_font_size=args.cameo_label_font_size, debug=args.debug, upload_to_server=True, image_server_base_url=args.image_server_base_url, image_server_path_prefix=args.image_server_path_prefix, image_server_deck_dir=args.image_server_deck_dir, overwrite_server_file=args.overwrite_server_file)
+                else:
+                    output_target = f"{base_output_filename_final}.png"
+                    create_png_output(image_sources=image_sources_to_process, output_path_or_buffer=output_target, paper_type_str=validated_paper_type, dpi=args.dpi, image_spacing_pixels=args.image_spacing_pixels, page_margin_str=args.page_margin, page_background_color_str=args.page_bg_color, image_cell_background_color_str=args.image_cell_bg_color, cut_lines=args.cut_lines, cut_line_length_str=args.cut_line_length, cut_line_color_str=args.cut_line_color, cut_line_width_px=args.cut_line_width_px, pdf_name_label=name_for_pdf_label, cameo_label_font_size=args.cameo_label_font_size, debug=args.debug)
             else:
                 print(f"Error: Unknown output format '{args.output_format}'.")
     finally:
