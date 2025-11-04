@@ -6,7 +6,7 @@ import os
 import random
 import urllib.parse
 from collections import defaultdict
-from typing import List, Dict, Optional, Tuple, Set
+from typing import List, Dict, Optional, Tuple, Set, Union
 
 from image_handler import ImageSource
 from parsing_utils import parse_moxfield_line, normalize_card_name, parse_variant_filename
@@ -31,7 +31,17 @@ def select_cards_with_priority_and_cycling(
     # Shuffle pools to ensure random selection within priority tiers
     shuffled_preferred = preferred_pool[:]
     if spell_sets_filter:
-        shuffled_preferred.sort(key=lambda x: spell_sets_filter.index(parse_variant_filename(x.original)[1]))
+        def get_sort_key(source: ImageSource):
+            _, src_set_code, src_collector_number = parse_variant_filename(source.original)
+            for i, filter_set_str in enumerate(spell_sets_filter):
+                if '-' in filter_set_str:
+                    filter_set, filter_variant = filter_set_str.split('-', 1)
+                    if src_set_code == filter_set and src_collector_number and src_collector_number.endswith(filter_variant):
+                        return i
+                elif src_set_code == filter_set_str:
+                    return i
+            return len(spell_sets_filter) # Should not happen if preferred_pool is built correctly
+        shuffled_preferred.sort(key=get_sort_key)
     else:
         random.shuffle(shuffled_preferred)
     
@@ -68,6 +78,7 @@ def process_deck_list(
     spell_set_mode: str,
     basic_land_sets_exclude: Optional[List[str]],
     spell_sets_exclude: Optional[List[str]],
+    card_set_overrides: Dict[str, Dict[str, Union[List[str], str]]],
     debug: bool = False
 ) -> Tuple[List[ImageSource], List[str], Dict[str, Dict[str, int]]]:
     """
@@ -216,29 +227,51 @@ def process_deck_list(
         current_sets_filter = basic_land_sets_filter if is_basic_land else spell_sets_filter
         current_set_mode = basic_land_set_mode if is_basic_land else spell_set_mode
 
+        if not is_basic_land and normalized_name in card_set_overrides:
+            override = card_set_overrides[normalized_name]
+            current_sets_filter = override["sets"]
+            current_set_mode = override["mode"]
+            if debug:
+                print(f"DEBUG: Using override for '{original_name}': sets={current_sets_filter}, mode={current_set_mode}")
+
         preferred_pool: List[ImageSource] = []
         general_pool: List[ImageSource] = []
 
         if current_sets_filter:
             for src in candidate_pool:
-                if parse_variant_filename(src.original)[1] in current_sets_filter:
+                _, src_set_code, src_collector_number = parse_variant_filename(src.original)
+                matched = False
+                for filter_set_str in current_sets_filter:
+                    if '-' in filter_set_str:
+                        filter_set, filter_variant = filter_set_str.split('-', 1)
+                        if src_set_code == filter_set and src_collector_number and src_collector_number.endswith(filter_variant):
+                            matched = True
+                            break
+                    elif src_set_code == filter_set_str:
+                        matched = True
+                        break
+                
+                if matched:
                     preferred_pool.append(src)
                 else:
                     general_pool.append(src)
             
-            if current_set_mode == 'force':
-                general_pool = []
 
-            if current_set_mode == 'force' and not preferred_pool:
-                print(f"  NOT FOUND (Spell): No '{original_name}' matching required sets: {current_sets_filter}")
-                missing_card_names.append(f"{count}x {original_name} (Set Mismatch: {current_sets_filter})")
-                continue
             
-            if current_set_mode in ['prefer', 'minimum'] and not preferred_pool:
-                available_sets = {parse_variant_filename(s.original)[1] for s in candidate_pool if parse_variant_filename(s.original)[1]}
-                print(f"  WARN: No '{original_name}' found in preferred sets {current_sets_filter}. Available sets are: {sorted(list(available_sets))}. Falling back to all available sets.")
-            
-            selected_sources = select_cards_with_priority_and_cycling(preferred_pool, general_pool, count, debug, current_sets_filter)
+            if current_set_mode == 'prefer':
+                if not preferred_pool:
+                    # Fallback to general pool only if preferred pool is empty
+                    selected_sources = select_cards_with_priority_and_cycling([], general_pool, count, debug, current_sets_filter)
+                else:
+                    selected_sources = select_cards_with_priority_and_cycling(preferred_pool, [], count, debug, current_sets_filter)
+            elif current_set_mode == 'minimum':
+                selected_sources = select_cards_with_priority_and_cycling(preferred_pool, general_pool, count, debug, current_sets_filter)
+            elif current_set_mode == 'force':
+                if not preferred_pool:
+                    print(f"  NOT FOUND (Spell): No '{original_name}' matching required sets: {current_sets_filter}")
+                    missing_card_names.append(f"{count}x {original_name} (Set Mismatch: {current_sets_filter})")
+                    continue
+                selected_sources = select_cards_with_priority_and_cycling(preferred_pool, [], count, debug, current_sets_filter)
         else:
             general_pool = candidate_pool
             selected_sources = select_cards_with_priority_and_cycling([], general_pool, count, debug)

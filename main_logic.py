@@ -81,6 +81,7 @@ def main():
     general_group.add_argument("--spell-set-mode", type=str, default="prefer", choices=["prefer", "force", "minimum"], help="Controls how --spell-set is applied. 'prefer' will use the specified sets if available, but fall back to any set if not. 'force' will fail if no cards from the specified sets are found. 'minimum' will use at least one from the specified sets and fallback for the rest.")
     general_group.add_argument("--basic-land-set-exclude", type=str, default=None, help="Comma-separated list of set codes to EXCLUDE for basic lands (e.g., 'unh,ust').")
     general_group.add_argument("--spell-set-exclude", type=str, default=None, help="Comma-separated list of set codes to EXCLUDE for non-land cards ('spells').")
+    general_group.add_argument("--card-set", type=str, action="append", help="Override spell-set for a specific card. Format: \"<Card Name>:<Set(s)>[:<Mode>]\". Can be used multiple times.")
 
     # --- Page & Layout Options ---
     pg_layout_group = parser.add_argument_group('Page and Layout Options (for PDF/PNG grid output; largely IGNORED by --cameo mode)')
@@ -159,6 +160,21 @@ def main():
         if args.debug and parsed_spell_sets_exclude:
             print(f"DEBUG: Parsed spell set exclusion filter: {parsed_spell_sets_exclude}")
 
+    card_set_overrides = {}
+    if args.card_set:
+        for override in args.card_set:
+            parts = override.split(':')
+            if len(parts) < 2 or len(parts) > 3:
+                parser.error(f"Invalid --card-set format: {override}")
+            card_name = normalize_card_name(parts[0])
+            sets = [s.strip().lower() for s in parts[1].split(',') if s.strip()]
+            mode = args.spell_set_mode
+            if len(parts) == 3:
+                mode = parts[2].lower()
+                if mode not in ["prefer", "force", "minimum"]:
+                    parser.error(f"Invalid mode in --card-set: {mode}")
+            card_set_overrides[card_name] = {"sets": sets, "mode": mode}
+
     # --- Discover images from source ---
     print("--- Discovering Images ---")
     png_source_path_on_server = "/"
@@ -195,6 +211,7 @@ def main():
                 parsed_spell_sets, args.spell_set_mode,
                 parsed_basic_land_sets_exclude,
                 parsed_spell_sets_exclude,
+                card_set_overrides,
                 args.debug
             )
             
