@@ -16,7 +16,8 @@ def select_cards_with_priority_and_cycling(
     preferred_pool: List[ImageSource],
     general_pool: List[ImageSource],
     num_to_select: int,
-    debug: bool = False
+    debug: bool = False,
+    spell_sets_filter: Optional[List[str]] = None
 ) -> List[ImageSource]:
     """
     Selects cards by maximizing variety, prioritizing the preferred pool.
@@ -29,7 +30,10 @@ def select_cards_with_priority_and_cycling(
     
     # Shuffle pools to ensure random selection within priority tiers
     shuffled_preferred = preferred_pool[:]
-    random.shuffle(shuffled_preferred)
+    if spell_sets_filter:
+        shuffled_preferred.sort(key=lambda x: spell_sets_filter.index(parse_variant_filename(x.original)[1]))
+    else:
+        random.shuffle(shuffled_preferred)
     
     shuffled_general = general_pool[:]
     random.shuffle(shuffled_general)
@@ -171,7 +175,7 @@ def process_deck_list(
             missing_card_names.append(f"{count}x {original_name} ({set_code.upper()})")
             continue
             
-        selected_sources = select_cards_with_priority_and_cycling([], candidate_pool, count, debug)
+        selected_sources = select_cards_with_priority_and_cycling([], candidate_pool, count, debug, [set_code])
         if debug: print(f"DEBUG:   Selected {len(selected_sources)} versions for {log_line_base}")
         
         images_to_print.extend(selected_sources)
@@ -234,7 +238,7 @@ def process_deck_list(
                 available_sets = {parse_variant_filename(s.original)[1] for s in candidate_pool if parse_variant_filename(s.original)[1]}
                 print(f"  WARN: No '{original_name}' found in preferred sets {current_sets_filter}. Available sets are: {sorted(list(available_sets))}. Falling back to all available sets.")
             
-            selected_sources = select_cards_with_priority_and_cycling(preferred_pool, general_pool, count, debug)
+            selected_sources = select_cards_with_priority_and_cycling(preferred_pool, general_pool, count, debug, current_sets_filter)
         else:
             general_pool = candidate_pool
             selected_sources = select_cards_with_priority_and_cycling([], general_pool, count, debug)
