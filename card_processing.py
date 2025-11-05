@@ -252,8 +252,8 @@ def process_deck_list(
                 skipped_basic_lands_count[original_name] += count
                 continue
                 
-            # 1. Get all available sources that haven't been used yet
-            candidate_pool = [src for src in all_cards_map.get(normalized_name, []) if src not in used_sources]
+            # 1. Get all available sources for the card
+            candidate_pool = all_cards_map.get(normalized_name, [])
             
             # 2. Apply the global EXCLUSION filter first
             current_sets_exclude = basic_land_sets_exclude if is_basic_land else spell_sets_exclude
@@ -301,7 +301,7 @@ def process_deck_list(
                     
                     if matched:
                         preferred_pool.append(src)
-                    else:
+                    elif src not in used_sources:
                         general_pool.append(src)
                 
 
@@ -321,9 +321,8 @@ def process_deck_list(
                         continue
                     selected_sources = select_cards_with_priority_and_cycling(preferred_pool, [], count, debug, current_sets_filter)
             else:
-                general_pool = candidate_pool
+                general_pool = [src for src in candidate_pool if src not in used_sources]
                 selected_sources = select_cards_with_priority_and_cycling([], general_pool, count, debug)
-
             images_to_print.extend(selected_sources)
             update_manifest(section_name, original_name, selected_sources)
             for src in selected_sources: used_sources.add(src)

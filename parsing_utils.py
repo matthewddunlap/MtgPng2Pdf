@@ -33,8 +33,8 @@ class DecklistEntry(NamedTuple):
 
 # Regex to parse Moxfield-style deck list lines
 MOXFIELD_LINE_RE = re.compile(
-    # 1. Capture count and trailing space(s)
-    r"^\s*(?P<count>\d+)\s+"
+    # 1. Capture count, optional 'x', and trailing space(s)
+    r"^\s*(?P<count>\d+)x?\s+"
     # 2. Capture card name (non-greedy)
     r"(?P<name>.+?)"
     # 3. An optional group for the set, which itself contains an optional group for the number.
