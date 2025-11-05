@@ -7,8 +7,8 @@ import io
 import os
 from typing import List, Optional
 
-from card_processing import process_deck_list
-from config import BASIC_LAND_NAMES
+from card_processing import process_deck_list, process_extra_card
+from config import BASIC_LAND_NAMES, LAYOUTS_DATA
 from image_handler import discover_images, ImageSource
 from output_utils import write_missing_cards_file, print_selection_manifest, copy_deck_pngs, create_png_output
 from parsing_utils import parse_paper_type, normalize_card_name
@@ -83,6 +83,7 @@ def main():
     general_group.add_argument("--basic-land-set-exclude", type=str, default=None, help="Comma-separated list of set codes to EXCLUDE for basic lands (e.g., 'unh,ust').")
     general_group.add_argument("--spell-set-exclude", type=str, default=None, help="Comma-separated list of set codes to EXCLUDE for non-land cards ('spells').")
     general_group.add_argument("--card-set", type=str, action="append", help="Override spell-set for a specific card. Format: \"<Card Name>:<Set(s)>[:<Mode>]\". Can be used multiple times.")
+    general_group.add_argument("--extra-card", type=str, action="append", help="Specify an extra card to fill empty slots on the last page. Format: \"<Card Name>:<Set(s)>[:<Mode>]\". Can be used multiple times.")
     general_group.add_argument("--deck-manifest", action="store_true", help="Add a deck manifest to the last page if there is space.")
     general_group.add_argument("--deck-manifest-font-size", type=int, default=0, help="Font size for the deck manifest. Set to 0 for auto-sizing. Must be between 8 and 96 if set manually.")
 
@@ -254,7 +255,40 @@ def main():
                 print("No images to print (after potential skips). Exiting."); return
             if image_sources_to_process:
                 print(f"Prepared {len(image_sources_to_process)} image instances (excluding any skipped basic lands).")
-        
+
+            # --- Handle Extra Cards ---
+            if args.extra_card and not args.png_out_dir:
+                if args.cameo:
+                    layout_config = LAYOUTS_DATA["paper_layouts"].get(validated_paper_type, {})
+                    card_layout = layout_config.get("card_layouts", {}).get("standard", {})
+                    num_cols = len(card_layout.get("x_pos", []))
+                    num_rows = len(card_layout.get("y_pos", []))
+                    cards_per_page = num_cols * num_rows
+                else:
+                    cards_per_page = 9 if validated_paper_type == "letter" else 12
+                
+                if cards_per_page > 0:
+                    num_slots_on_last_page = len(image_sources_to_process) % cards_per_page
+                    if num_slots_on_last_page > 0:
+                        num_empty_slots = cards_per_page - num_slots_on_last_page
+                        print(f"\n--- Filling {num_empty_slots} empty slots with extra cards ---")
+                        extra_cards_processed = 0
+                        for extra_card_str in args.extra_card:
+                            if extra_cards_processed >= num_empty_slots:
+                                break
+                            
+                            extra_card_source = process_extra_card(
+                                extra_card_str,
+                                all_cards_map,
+                                args.spell_set_mode,
+                                args.debug
+                            )
+                            if extra_card_source:
+                                image_sources_to_process.append(extra_card_source)
+                                extra_cards_processed += 1
+                                print(f"  Added extra card: {extra_card_str}")
+                        print(f"Added {extra_cards_processed} extra cards to the last page.")
+
         elif not args.png_out_dir:
             print("\n--- Directory Scan Mode (for PDF/PNG grid) ---")
             skipped_basics_count = 0

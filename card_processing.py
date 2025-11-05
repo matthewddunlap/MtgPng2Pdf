@@ -333,3 +333,73 @@ def process_deck_list(
             print(f"    - {num}x {name}")
             
     return images_to_print, list(set(missing_card_names)), selection_manifest
+
+def process_extra_card(
+    extra_card_str: str,
+    all_cards_map: Dict[str, List[ImageSource]],
+    spell_set_mode: str,
+    debug: bool = False
+) -> Optional[ImageSource]:
+    """
+    Processes a single extra card string, selects the best variant, and returns its ImageSource.
+    """
+    parts = extra_card_str.split(':')
+    if len(parts) < 2 or len(parts) > 3:
+        print(f"  Warning: Skipping malformed extra card: {extra_card_str}")
+        return None
+
+    card_name = parts[0]
+    normalized_name = normalize_card_name(card_name)
+    sets = [s.strip().lower() for s in parts[1].split(',') if s.strip()]
+    mode = spell_set_mode
+    if len(parts) == 3:
+        mode = parts[2].lower()
+        if mode not in ["prefer", "force", "minimum"]:
+            print(f"  Warning: Invalid mode in extra card '{extra_card_str}'. Defaulting to '{spell_set_mode}'.")
+            mode = spell_set_mode
+
+    candidate_pool = all_cards_map.get(normalized_name, [])
+    if not candidate_pool:
+        print(f"  Warning: No images found for extra card: {card_name}")
+        return None
+
+    preferred_pool: List[ImageSource] = []
+    general_pool: List[ImageSource] = []
+
+    if sets:
+        for src in candidate_pool:
+            _, src_set_code, src_collector_number = parse_variant_filename(src.original)
+            matched = False
+            for filter_set_str in sets:
+                if '-' in filter_set_str:
+                    filter_set, filter_variant = filter_set_str.split('-', 1)
+                    if src_set_code == filter_set and src_collector_number and src_collector_number.endswith(filter_variant):
+                        matched = True
+                        break
+                elif src_set_code == filter_set_str:
+                    matched = True
+                    break
+            
+            if matched:
+                preferred_pool.append(src)
+            else:
+                general_pool.append(src)
+        
+        if mode == 'force' and not preferred_pool:
+            print(f"  Warning: No '{card_name}' matching required sets for extra card: {sets}")
+            return None
+        
+        if mode == 'prefer' and preferred_pool:
+            return random.choice(preferred_pool)
+        elif mode == 'minimum' and preferred_pool:
+            return random.choice(preferred_pool)
+        elif general_pool:
+            return random.choice(general_pool)
+        elif preferred_pool:
+            return random.choice(preferred_pool)
+        else:
+            return None
+    elif candidate_pool:
+        return random.choice(candidate_pool)
+    else:
+        return None
