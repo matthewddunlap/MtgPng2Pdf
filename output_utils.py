@@ -10,22 +10,25 @@ from typing import List, Dict, Union
 
 from image_handler import ImageSource
 
-def print_selection_manifest(manifest: Dict[str, Dict[str, int]]):
+def print_selection_manifest(manifest: Dict[str, Dict[str, Dict[str, int]]]):
     """Prints a formatted summary of which card versions were selected."""
     if not manifest:
         return
         
     print("\n--- Card Selection Manifest ---")
     
-    # Sort by original card name
-    for card_name in sorted(manifest.keys()):
-        versions = manifest[card_name]
-        total_count = sum(versions.values())
-        print(f"{total_count}x {card_name}:")
-        
-        # Sort by filename for consistent output
-        for filename, count in sorted(versions.items()):
-            print(f"  - {count}x {filename}")
+    for section_name in ["Deck", "Sideboard"]:
+        if section_name in manifest and manifest[section_name]:
+            print(f"\n{section_name}:")
+            # Sort by original card name
+            for card_name in sorted(manifest[section_name].keys()):
+                versions = manifest[section_name][card_name]
+                total_count = sum(versions.values())
+                print(f"{total_count}x {card_name}:")
+                
+                # Sort by filename for consistent output
+                for filename, count in sorted(versions.items()):
+                    print(f"  - {count}x {filename}")
     print("-----------------------------")
 
 def write_missing_cards_file(deck_list_path: str, missing_cards: List[str]):
