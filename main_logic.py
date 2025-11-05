@@ -116,8 +116,7 @@ def main():
     if args.png_out_dir and (args.output_file or args.output_format != "pdf"):
         if args.output_file: print("Warning: --output-file is ignored when --png-out-dir is used.")
         if args.output_format != "pdf": print(f"Warning: --output-format {args.output_format} is ignored when --png-out-dir is used.")
-    if args.cameo and args.output_format != "pdf":
-        print("Warning: --cameo option is only applicable when --output-format is 'pdf'. Ignoring --cameo."); args.cameo = False
+
     if not (8 <= args.cameo_label_font_size <= 96):
         parser.error("--cameo-label-font-size must be between 8 and 96.")
     if args.deck_manifest_font_size != 0 and not (8 <= args.deck_manifest_font_size <= 96):
