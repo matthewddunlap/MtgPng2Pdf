@@ -17,9 +17,11 @@ def normalize_card_name(name: str) -> str:
     name = name.lower().strip()
     # Decompose unicode characters (like accents) into base characters
     normalized_name = unicodedata.normalize('NFKD', name).encode('ascii', 'ignore').decode('ascii')
-    # Remove common punctuation and whitespace used as separators
-    normalized_name = re.sub(r"[',\.:()\[\]\s_]", "", normalized_name)
-    # Remove any remaining non-alphanumeric characters (except hyphens if needed, but we remove them here for the key)
+    # Replace spaces and underscores with hyphens
+    normalized_name = re.sub(r"[\s_]", "-", normalized_name)
+    # Remove common punctuation
+    normalized_name = re.sub(r"['\.:()\[\]]", "", normalized_name)
+    # Remove any remaining non-alphanumeric characters (except hyphens)
     normalized_name = re.sub(r"[^a-z0-9-]", "", normalized_name)
     return normalized_name.strip()
 
@@ -96,8 +98,7 @@ def parse_variant_filename(filename: str) -> Tuple[str, Optional[str], Optional[
             collector_number = parts[-1].lower()
             set_code = parts[-2].lower()
             # Everything before the set and number is the card name.
-            # We join them without separators because normalize_card_name will remove them anyway.
-            name_str = "".join(parts[:-2])
+            name_str = "-".join(parts[:-2])
             normalized_name = normalize_card_name(name_str)
             return normalized_name, set_code, collector_number
 
