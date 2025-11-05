@@ -13,6 +13,7 @@ from image_handler import discover_images, ImageSource
 from output_utils import write_missing_cards_file, print_selection_manifest, copy_deck_pngs, create_png_output
 from parsing_utils import parse_paper_type, normalize_card_name
 from pdf_generator import create_pdf_cameo_style, create_pdf_grid
+from manifest_generator import generate_deck_manifest_image
 from web_utils import check_server_file_exists, upload_file_to_server, cleanup_temp_files
 
 def main():
@@ -82,6 +83,8 @@ def main():
     general_group.add_argument("--basic-land-set-exclude", type=str, default=None, help="Comma-separated list of set codes to EXCLUDE for basic lands (e.g., 'unh,ust').")
     general_group.add_argument("--spell-set-exclude", type=str, default=None, help="Comma-separated list of set codes to EXCLUDE for non-land cards ('spells').")
     general_group.add_argument("--card-set", type=str, action="append", help="Override spell-set for a specific card. Format: \"<Card Name>:<Set(s)>[:<Mode>]\". Can be used multiple times.")
+    general_group.add_argument("--deck-manifest", action="store_true", help="Add a deck manifest to the last page if there is space.")
+    general_group.add_argument("--deck-manifest-font-size", type=int, default=0, help="Font size for the deck manifest. Set to 0 for auto-sizing. Must be between 8 and 96 if set manually.")
 
     # --- Page & Layout Options ---
     pg_layout_group = parser.add_argument_group('Page and Layout Options (for PDF/PNG grid output; largely IGNORED by --cameo mode)')
@@ -117,6 +120,8 @@ def main():
         print("Warning: --cameo option is only applicable when --output-format is 'pdf'. Ignoring --cameo."); args.cameo = False
     if not (8 <= args.cameo_label_font_size <= 96):
         parser.error("--cameo-label-font-size must be between 8 and 96.")
+    if args.deck_manifest_font_size != 0 and not (8 <= args.deck_manifest_font_size <= 96):
+        parser.error("--deck-manifest-font-size must be between 8 and 96, or 0 for auto-sizing.")
     
     if args.upload_to_server:
         if not args.image_server_base_url:
@@ -220,6 +225,32 @@ def main():
             if selection_manifest:
                 print_selection_manifest(selection_manifest)
 
+            # Define base_output_filename_final and name_for_pdf_label here
+            base_output_filename_final: str
+            if args.output_file:
+                base_output_filename_final = args.output_file
+            elif args.deck_list:
+                dl_bn = os.path.splitext(os.path.basename(args.deck_list))[0]
+                dl_dir = os.path.dirname(args.deck_list)
+                base_output_filename_final = os.path.join(dl_dir, dl_bn) if dl_dir else dl_bn
+            else:
+                base_output_filename_final = "MtgProxyOutput"
+
+            name_for_pdf_label = os.path.basename(base_output_filename_final)
+
+            if args.deck_manifest and args.deck_list and selection_manifest:
+                manifest_path = os.path.join(os.path.dirname(args.deck_list), "deck_manifest.png")
+                generate_deck_manifest_image(
+                    selection_manifest,
+                    args.deck_manifest_font_size,
+                    manifest_path,
+                    deck_name=name_for_pdf_label
+                )
+                manifest_source = ImageSource(manifest_path)
+                image_sources_to_process.append(manifest_source)
+                if args.debug:
+                    print(f"DEBUG: Generated deck manifest at {manifest_path}")
+
             if not image_sources_to_process and not args.png_out_dir:
                 print("No images to print (after potential skips). Exiting."); return
             if image_sources_to_process:
@@ -252,18 +283,6 @@ def main():
             if not image_sources_to_process:
                 print("No images to generate grid output. Exiting."); return
             
-            base_output_filename_final: str
-            if args.output_file:
-                base_output_filename_final = args.output_file
-            elif args.deck_list:
-                dl_bn = os.path.splitext(os.path.basename(args.deck_list))[0]
-                dl_dir = os.path.dirname(args.deck_list)
-                base_output_filename_final = os.path.join(dl_dir, dl_bn) if dl_dir else dl_bn
-            else:
-                base_output_filename_final = "MtgProxyOutput"
-
-            name_for_pdf_label = os.path.basename(base_output_filename_final)
-
             if args.output_format == "pdf":
                 output_pdf_filename = f"{os.path.basename(base_output_filename_final)}.pdf"
                 pdf_buffer = None
