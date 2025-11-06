@@ -96,6 +96,7 @@ def main():
     pg_layout_group.add_argument("--page-bg-color", type=str, default="white", help="Overall page/canvas background color.")
     pg_layout_group.add_argument("--image-cell-bg-color", type=str, default="black", help="Background color directly behind transparent image parts.")
     pg_layout_group.add_argument("--cameo-label-font-size", type=int, default=32, help="[Cameo Mode Only] Font size for the page label. This is a base size in points, which is then scaled by DPI. A reasonable range is 24-48. Must be between 8 and 96.")
+    pg_layout_group.add_argument("--pdf-quality", type=int, default=75, choices=range(1, 101), metavar="[1-100]", help="[PDF Cameo Mode Only] The quality of the embedded images in the PDF. 100 is the highest quality.")
     
     # --- Cut Line Options ---
     cut_line_group = parser.add_argument_group('Cut Line Options (for PDF/PNG grid output; IGNORED by --cameo mode)')
@@ -326,7 +327,7 @@ def main():
                     output_target = f"{base_output_filename_final}.pdf"
                 
                 if args.cameo:
-                    create_pdf_cameo_style(image_sources=image_sources_to_process, output_path_or_buffer=output_target, paper_type_arg=validated_paper_type, target_dpi=args.dpi, image_cell_bg_color_str=args.image_cell_bg_color, pdf_name_label=name_for_pdf_label, label_font_size_base=args.cameo_label_font_size, debug=args.debug)
+                    create_pdf_cameo_style(image_sources=image_sources_to_process, output_path_or_buffer=output_target, paper_type_arg=validated_paper_type, target_dpi=args.dpi, image_cell_bg_color_str=args.image_cell_bg_color, pdf_name_label=name_for_pdf_label, label_font_size_base=args.cameo_label_font_size, pdf_quality=args.pdf_quality, debug=args.debug)
                 else:
                     create_pdf_grid(image_sources=image_sources_to_process, output_path_or_buffer=output_target, paper_type_str=validated_paper_type, image_spacing_pixels=args.image_spacing_pixels, dpi=args.dpi, page_margin_str=args.page_margin, page_background_color_str=args.page_bg_color, image_cell_background_color_str=args.image_cell_bg_color, cut_lines=args.cut_lines, cut_line_length_str=args.cut_line_length, cut_line_color_str=args.cut_line_color, cut_line_width_pt=args.cut_line_width_pt, debug=args.debug)
                 

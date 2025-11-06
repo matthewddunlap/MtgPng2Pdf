@@ -57,7 +57,7 @@ def draw_card_layout_cameo(card_images: List[Image.Image], base_image: Image.Ima
         final_print_bleed_iterations = math.ceil(print_bleed_layout_units * ppi_ratio) + extend_corners_page_px_scaled
         draw_card_with_border_cameo(current_card_image, base_image, paste_box_for_card_content, final_print_bleed_iterations, cell_bg_color_pil)
 
-def create_pdf_cameo_style(image_sources: List[ImageSource], output_path_or_buffer: Union[str, io.BytesIO], paper_type_arg: str, target_dpi: int, image_cell_bg_color_str: str, pdf_name_label: Optional[str], label_font_size_base: int, debug: bool = False):
+def create_pdf_cameo_style(image_sources: List[ImageSource], output_path_or_buffer: Union[str, io.BytesIO], paper_type_arg: str, target_dpi: int, image_cell_bg_color_str: str, pdf_name_label: Optional[str], label_font_size_base: int, pdf_quality: int, debug: bool = False):
     print(f"\n--- Cameo PDF Generation (PIL-based) ---")
     if isinstance(output_path_or_buffer, str): print(f"Output file: {output_path_or_buffer}")
     else: print(f"Output target: In-memory buffer (for server upload)")
@@ -73,7 +73,7 @@ def create_pdf_cameo_style(image_sources: List[ImageSource], output_path_or_buff
     layout_base_ppi = 300.0; ppi_ratio = target_dpi / layout_base_ppi
     page_width_px_scaled = math.floor(paper_layout_config["width"] * ppi_ratio); page_height_px_scaled = math.floor(paper_layout_config["height"] * ppi_ratio)
     card_slot_width_layout = card_layout_config["width"]; card_slot_height_layout = card_layout_config["height"]
-    crop_percentage_on_source = 0.0; extend_corners_on_source_px = 0; pdf_save_quality = 75
+    crop_percentage_on_source = 0.0; extend_corners_on_source_px = 0
     max_print_bleed_layout_units = calculate_max_print_bleed_cameo(card_layout_config["x_pos"], card_layout_config["y_pos"], card_slot_width_layout, card_slot_height_layout)
     if debug: print(f"DEBUG CAMEO: Paper Key: {cameo_paper_key}, Card Key: {cameo_card_key}"); print(f"DEBUG CAMEO: Grid: {num_cols}x{num_rows} ({num_cards_per_page} cards/page)")
     script_dir = os.path.dirname(os.path.abspath(__file__)); asset_dir_cameo = os.path.join(script_dir, "assets"); registration_filename = f'{cameo_paper_key}_registration.jpg'; registration_path = os.path.join(asset_dir_cameo, registration_filename)
@@ -123,7 +123,7 @@ def create_pdf_cameo_style(image_sources: List[ImageSource], output_path_or_buff
         all_pil_pages.append(current_page_pil_image)
     if not all_pil_pages: print("Cameo PDF: No pages generated."); return
     try:
-        all_pil_pages[0].save(output_path_or_buffer, format='PDF', save_all=True, append_images=all_pil_pages[1:], resolution=float(target_dpi), quality=pdf_save_quality)
+        all_pil_pages[0].save(output_path_or_buffer, format='PDF', save_all=True, append_images=all_pil_pages[1:], resolution=float(target_dpi), quality=pdf_quality)
         if isinstance(output_path_or_buffer, str): print(f"Cameo PDF generation successful: {output_path_or_buffer} ({len(all_pil_pages)} page(s))")
         else: print(f"Cameo PDF generation to memory buffer successful ({len(all_pil_pages)} page(s))")
     except Exception as e: print(f"Error saving Cameo PDF: {e}")
