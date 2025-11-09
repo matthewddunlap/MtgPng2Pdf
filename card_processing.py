@@ -403,3 +403,40 @@ def process_extra_card(
         return random.choice(candidate_pool)
     else:
         return None
+
+def parse_deck_list_for_manifest(
+    deck_list_path: str,
+    debug: bool = False
+) -> Dict[str, Dict[str, Dict[str, int]]]:
+    """
+    Parses a deck list and returns a selection manifest without searching for images.
+    """
+    selection_manifest: Dict[str, Dict[str, Dict[str, int]]] = defaultdict(lambda: defaultdict(lambda: defaultdict(int)))
+    current_section = "Deck"
+
+    try:
+        with open(deck_list_path, 'r', encoding='utf-8') as f:
+            for line_num, line in enumerate(f, 1):
+                line = line.strip()
+
+                if not line:
+                    continue
+
+                if SIDEBOARD_HEADING_RE.match(line):
+                    current_section = "Sideboard"
+                    continue
+
+                if not line[0].isdigit():
+                    continue
+
+                entry = parse_moxfield_line(line)
+                if not entry:
+                    continue
+
+                selection_manifest[current_section][entry.card_name]["placeholder.png"] += entry.count
+
+    except FileNotFoundError:
+        print(f"Error: Deck list file not found: {deck_list_path}")
+        return {}
+
+    return selection_manifest
