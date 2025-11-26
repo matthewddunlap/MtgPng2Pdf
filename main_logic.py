@@ -15,6 +15,7 @@ from parsing_utils import parse_paper_type, normalize_card_name
 from pdf_generator import create_pdf_cameo_style, create_pdf_grid
 from manifest_generator import generate_deck_manifest_image
 from web_utils import check_server_file_exists, upload_file_to_server, cleanup_temp_files
+from token_set_manager import load_token_sets, update_token_sets_from_api
 
 def main():
     parser = argparse.ArgumentParser(
@@ -74,6 +75,8 @@ def main():
     general_group = parser.add_argument_group('General Options')
     general_group.add_argument("--debug", action="store_true", help="Enable detailed debug messages.")
     general_group.add_argument("--skip-basic-land", action="store_true", help="Skip basic lands.")
+    general_group.add_argument("--skip-tokens", action="store_true", help="Skip tokens from Token section.")
+    general_group.add_argument("--update-token-sets", action="store_true", help="Update the token_sets.json file from Scryfall API and exit.")
     general_group.add_argument("--sort", action="store_true", help="Sort PNGs alphabetically (for directory scan mode or if --png-out-dir copies all from dir).")
     general_group.add_argument("--cameo", action="store_true", help="Use PIL-based PDF generation (modeled after create_pdf.py/utilities.py) when --output-format is pdf. This mode uses fixed layouts from an internal 'layouts.json' equivalent and ignores most page/layout/cut-line options. Currently best supports --paper-type letter or a4 (if in layouts). EXPECTS an 'assets' FOLDER with registration mark images (e.g., 'letter_registration.jpg') next to the script for proper Cameo output.")
     general_group.add_argument("--basic-land-set", type=str, default=None, help="Comma-separated list of set codes to filter basic lands by (e.g., 'lea,unh,neo'). Behavior is controlled by --basic-land-set-mode.")
@@ -108,6 +111,17 @@ def main():
     cut_line_group.add_argument( "--cut-line-width-px", type=int, default=1, help="Thickness of cut lines in pixels (for PNG output).")
 
     args = parser.parse_args()
+
+    # --- Handle --update-token-sets command ---
+    if args.update_token_sets:
+        print("\n--- Updating Token Sets from Scryfall API ---")
+        success = update_token_sets_from_api(debug=args.debug)
+        if success:
+            print("\nToken sets updated successfully!")
+            return
+        else:
+            print("\nFailed to update token sets.")
+            return
 
     # --- Mode Validation ---
     if not args.png_dir and not args.image_server_base_url:
@@ -181,6 +195,10 @@ def main():
                     parser.error(f"Invalid mode in --card-set: {mode}")
             card_set_overrides[card_name] = {"sets": sets, "mode": mode}
 
+    # --- Load token sets ---
+    print("\n--- Loading Token Sets ---")
+    token_sets = load_token_sets(debug=args.debug)
+
     # --- Discover images from source ---
     print("--- Discovering Images ---")
     png_source_path_on_server = "/"
@@ -212,7 +230,9 @@ def main():
             print("\n--- Deck List Mode ---")
             image_sources_to_process, missing_cards_from_deck, selection_manifest = process_deck_list(
                 args.deck_list, all_cards_map,
-                args.skip_basic_land, 
+                args.skip_basic_land,
+                args.skip_tokens,
+                token_sets,
                 parsed_basic_land_sets, args.basic_land_set_mode,
                 parsed_spell_sets, args.spell_set_mode,
                 parsed_basic_land_sets_exclude,
@@ -250,6 +270,13 @@ def main():
                 )
                 manifest_source = ImageSource(manifest_path)
                 image_sources_to_process.append(manifest_source)
+                
+                # Format the name for display (matching manifest_generator logic)
+                formatted_name = name_for_pdf_label.replace('-', ' ').replace('_', ' ')
+                display_title = " ".join([word.capitalize() for word in formatted_name.split()])
+                
+                print("Manifest:")
+                print(display_title)
                 if args.debug:
                     print(f"DEBUG: Generated deck manifest at {manifest_path}")
 
@@ -335,7 +362,13 @@ def main():
                                 manifest_source = ImageSource(manifest_path)
                                 image_sources_to_process.append(manifest_source)
                                 extra_manifests_processed += 1
-                                print(f"  Added extra deck manifest: {extra_deck_path}")
+                                
+                                # Format the name for display (matching manifest_generator logic)
+                                formatted_name = extra_deck_name.replace('-', ' ').replace('_', ' ')
+                                display_title = " ".join([word.capitalize() for word in formatted_name.split()])
+                                
+                                print("Manifest:")
+                                print(display_title)
                         print(f"Added {extra_manifests_processed} extra deck manifests to the last page.")
 
         elif not args.png_out_dir:

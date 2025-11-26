@@ -12,9 +12,12 @@ from typing import List, Dict, Optional, Tuple, Set, Union
 from image_handler import ImageSource
 from parsing_utils import parse_moxfield_line, normalize_card_name, parse_variant_filename
 from config import BASIC_LAND_NAMES
+from token_set_manager import is_token_set
 
 # Regex to detect "Sideboard" heading (case-insensitive, optional leading spaces/hash)
 SIDEBOARD_HEADING_RE = re.compile(r"^[\s#]*sideboard[\s#]*$", re.IGNORECASE)
+# Regex to detect "Token" heading (case-insensitive, optional leading spaces/hash)
+TOKEN_HEADING_RE = re.compile(r"^[\s#]*token[\s#]*$", re.IGNORECASE)
 
 def select_cards_with_priority_and_cycling(
     preferred_pool: List[ImageSource],
@@ -76,6 +79,8 @@ def process_deck_list(
     deck_list_path: str,
     all_cards_map: Dict[str, List[ImageSource]],
     skip_basic_land: bool,
+    skip_tokens: bool,
+    token_sets: Set[str],
     basic_land_sets_filter: Optional[List[str]],
     basic_land_set_mode: str,
     spell_sets_filter: Optional[List[str]],
@@ -103,9 +108,14 @@ def process_deck_list(
     sideboard_set_specific_requests: Dict[Tuple[str, str], int] = defaultdict(int)
     sideboard_generic_requests: Dict[str, int] = defaultdict(int)
 
-    original_card_names: Dict[str, str] = {}
+    token_fully_specific_requests: Dict[Tuple[str, str, str], int] = defaultdict(int)
+    token_set_specific_requests: Dict[Tuple[str, str], int] = defaultdict(int)
+    token_generic_requests: Dict[str, int] = defaultdict(int)
 
-    current_section = "Deck" # Can be "Deck" or "Sideboard"
+    original_card_names: Dict[str, str] = {}
+    skipped_tokens_count: Dict[str, int] = defaultdict(int)
+
+    current_section = "Deck" # Can be "Deck", "Sideboard", or "Token"
 
     # --- Pass 1: Parse and Aggregate all lines from the deck list ---
     try:
@@ -120,6 +130,11 @@ def process_deck_list(
                 if SIDEBOARD_HEADING_RE.match(line):
                     current_section = "Sideboard"
                     if debug: print(f"DEBUG: Detected Sideboard heading at line {line_num}. Switching to Sideboard section.")
+                    continue
+
+                if TOKEN_HEADING_RE.match(line):
+                    current_section = "Token"
+                    if debug: print(f"DEBUG: Detected Token heading at line {line_num}. Switching to Token section.")
                     continue
 
                 if not line[0].isdigit():
@@ -155,6 +170,15 @@ def process_deck_list(
                         sideboard_set_specific_requests[key] += entry.count
                     else:
                         sideboard_generic_requests[normalized_name] += entry.count
+                elif current_section == "Token":
+                    if entry.set_code and entry.collector_number:
+                        key = (normalized_name, entry.set_code, entry.collector_number)
+                        token_fully_specific_requests[key] += entry.count
+                    elif entry.set_code:
+                        key = (normalized_name, entry.set_code)
+                        token_set_specific_requests[key] += entry.count
+                    else:
+                        token_generic_requests[normalized_name] += entry.count
 
     except FileNotFoundError:
         print(f"Error: Deck list file not found: {deck_list_path}")
@@ -168,7 +192,7 @@ def process_deck_list(
             filename = os.path.basename(urllib.parse.unquote(source.original))
             selection_manifest[section][original_name][filename] += 1
 
-    # --- Process requests for both Deck and Sideboard ---
+    # --- Process requests for Deck, Sideboard, and Token sections ---
     sections_to_process = {
         "Deck": {
             "fully_specific": deck_fully_specific_requests,
@@ -179,6 +203,11 @@ def process_deck_list(
             "fully_specific": sideboard_fully_specific_requests,
             "set_specific": sideboard_set_specific_requests,
             "generic": sideboard_generic_requests
+        },
+        "Token": {
+            "fully_specific": token_fully_specific_requests,
+            "set_specific": token_set_specific_requests,
+            "generic": token_generic_requests
         }
     }
 
@@ -251,6 +280,12 @@ def process_deck_list(
                 if debug: print(f"DEBUG: Skipping basic land: {count}x '{original_name}'")
                 skipped_basic_lands_count[original_name] += count
                 continue
+            
+            # Skip token cards if requested
+            if section_name == "Token" and skip_tokens:
+                if debug: print(f"DEBUG: Skipping token: {count}x '{original_name}'")
+                skipped_tokens_count[original_name] += count
+                continue
                 
             # 1. Get all available sources for the card
             candidate_pool = all_cards_map.get(normalized_name, [])
@@ -265,6 +300,26 @@ def process_deck_list(
                 ]
                 if debug and len(candidate_pool) < original_size:
                     print(f"DEBUG: Excluded {original_size - len(candidate_pool)} versions of '{original_name}' due to set exclusion.")
+            
+            # 2b. Apply bi-directional token set filtering
+            if section_name == "Deck":
+                # Deck section: EXCLUDE token sets
+                original_size = len(candidate_pool)
+                candidate_pool = [
+                    src for src in candidate_pool
+                    if not is_token_set(parse_variant_filename(src.original)[1], token_sets)
+                ]
+                if debug and len(candidate_pool) < original_size:
+                    print(f"DEBUG: Excluded {original_size - len(candidate_pool)} token set versions of '{original_name}' from Deck section.")
+            elif section_name == "Token":
+                # Token section: FORCE token sets only
+                original_size = len(candidate_pool)
+                candidate_pool = [
+                    src for src in candidate_pool
+                    if is_token_set(parse_variant_filename(src.original)[1], token_sets)
+                ]
+                if debug and len(candidate_pool) < original_size:
+                    print(f"DEBUG: Filtered to {len(candidate_pool)} token set versions of '{original_name}' for Token section.")
             
             if not candidate_pool:
                 print(f"  NOT FOUND (Generic): No available images for {count}x '{original_name}' after applying filters.")
@@ -330,6 +385,11 @@ def process_deck_list(
     if skipped_basic_lands_count:
         print("  Skipped the following basic lands:")
         for name, num in skipped_basic_lands_count.items():
+            print(f"    - {num}x {name}")
+    
+    if skipped_tokens_count:
+        print("  Skipped the following tokens:")
+        for name, num in skipped_tokens_count.items():
             print(f"    - {num}x {name}")
             
     return images_to_print, list(set(missing_card_names)), selection_manifest
@@ -424,6 +484,10 @@ def parse_deck_list_for_manifest(
 
                 if SIDEBOARD_HEADING_RE.match(line):
                     current_section = "Sideboard"
+                    continue
+
+                if TOKEN_HEADING_RE.match(line):
+                    current_section = "Token"
                     continue
 
                 if not line[0].isdigit():

@@ -17,7 +17,7 @@ def print_selection_manifest(manifest: Dict[str, Dict[str, Dict[str, int]]]):
         
     print("\n--- Card Selection Manifest ---")
     
-    for section_name in ["Deck", "Sideboard"]:
+    for section_name in ["Deck", "Sideboard", "Token"]:
         if section_name in manifest and manifest[section_name]:
             print(f"\n{section_name}:")
             # Sort by original card name

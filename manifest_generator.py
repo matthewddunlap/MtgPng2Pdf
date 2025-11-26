@@ -44,6 +44,13 @@ def generate_deck_manifest_image(
         for card_name, versions in sorted(selection_manifest["Sideboard"].items()):
             total_count = sum(versions.values())
             manifest_text += f"  {total_count}x {card_name}\n"
+        manifest_text += "\n"
+
+    if selection_manifest.get("Token"):
+        manifest_text += "Token\n"
+        for card_name, versions in sorted(selection_manifest["Token"].items()):
+            total_count = sum(versions.values())
+            manifest_text += f"  {total_count}x {card_name}\n"
 
     font_path = os.path.join(os.path.dirname(__file__), 'assets', 'DejaVuSans.ttf')
 
