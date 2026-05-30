@@ -37,6 +37,19 @@ LAYOUTS_DATA: Dict[str, Any] = {
                 },
             }
         },
+        "letter_portrait": {
+            "width": 2550,
+            "height": 3300,
+            "card_layouts": {
+                "standard": {
+                    "width": 1038,
+                    "height": 744,
+                    "x_pos": [219, 1293],
+                    "y_pos": [444, 1228, 2011],
+                    "template": "letter_matless_v2"
+                }
+            }
+        },
         "a4": {
             "width": 3508, "height": 2480,
             "card_layouts": {
@@ -52,6 +65,8 @@ LAYOUTS_DATA: Dict[str, Any] = {
 
 class CameoPaperSize:
     LETTER = "letter"
+    LETTER_PORTRAIT = "letter_portrait"
+    LETTER_LANDSCAPE = "letter"
     A4 = "a4"
 
 class CameoCardSize:

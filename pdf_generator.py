@@ -48,6 +48,13 @@ def draw_card_layout_cameo(card_images: List[Image.Image], base_image: Image.Ima
     for i, original_card_pil_image in enumerate(card_images):
         if i >= num_slots_on_page: break
         current_card_image = original_card_pil_image
+        
+        # Auto-rotate if image orientation doesn't match slot orientation
+        slot_is_landscape = card_width_layout > card_height_layout
+        image_is_landscape = current_card_image.width > current_card_image.height
+        if slot_is_landscape != image_is_landscape:
+            current_card_image = current_card_image.transpose(Image.ROTATE_90)
+
         slot_x_on_page_scaled = math.floor(x_pos_layout[i % num_cols] * ppi_ratio); slot_y_on_page_scaled = math.floor(y_pos_layout[i // num_cols] * ppi_ratio)
         if crop_percentage > 0: card_w, card_h = current_card_image.size; crop_w_px = math.floor(card_w / 2 * (crop_percentage / 100.0)); crop_h_px = math.floor(card_h / 2 * (crop_percentage / 100.0)); current_card_image = current_card_image.crop((crop_w_px, crop_h_px, card_w - crop_w_px, card_h - crop_h_px))
         if extend_corners_src_px > 0: current_card_image = current_card_image.crop((extend_corners_src_px, extend_corners_src_px, current_card_image.width - extend_corners_src_px, current_card_image.height - extend_corners_src_px))
@@ -57,15 +64,20 @@ def draw_card_layout_cameo(card_images: List[Image.Image], base_image: Image.Ima
         final_print_bleed_iterations = math.ceil(print_bleed_layout_units * ppi_ratio) + extend_corners_page_px_scaled
         draw_card_with_border_cameo(current_card_image, base_image, paste_box_for_card_content, final_print_bleed_iterations, cell_bg_color_pil)
 
-def create_pdf_cameo_style(image_sources: List[ImageSource], output_path_or_buffer: Union[str, io.BytesIO], paper_type_arg: str, target_dpi: int, image_cell_bg_color_str: str, pdf_name_label: Optional[str], label_font_size_base: int, pdf_quality: int, debug: bool = False):
+def create_pdf_cameo_style(image_sources: List[ImageSource], output_path_or_buffer: Union[str, io.BytesIO], paper_type_arg: str, target_dpi: int, image_cell_bg_color_str: str, pdf_name_label: Optional[str], label_font_size_base: int, pdf_quality: int, debug: bool = False, orientation: str = "landscape"):
     print(f"\n--- Cameo PDF Generation (PIL-based) ---")
     if isinstance(output_path_or_buffer, str): print(f"Output file: {output_path_or_buffer}")
     else: print(f"Output target: In-memory buffer (for server upload)")
     default_cell_bg_color = "black"
     if image_cell_bg_color_str.lower() != default_cell_bg_color: print(f"  Image Cell Background Color: {image_cell_bg_color_str}")
-    if paper_type_arg.lower() == "letter": cameo_paper_key = CameoPaperSize.LETTER
-    elif paper_type_arg.lower() == "a4": cameo_paper_key = CameoPaperSize.A4
-    else: print(f"Error: --cameo PDF generation: Paper type '{paper_type_arg}' is not directly supported by embedded cameo layouts."); return
+    
+    cameo_paper_key = paper_type_arg.lower()
+    if cameo_paper_key == "letter" and orientation == "portrait":
+        cameo_paper_key = CameoPaperSize.LETTER_PORTRAIT
+    
+    if cameo_paper_key not in LAYOUTS_DATA["paper_layouts"]:
+        print(f"Error: --cameo PDF generation: Paper type '{paper_type_arg}' with orientation '{orientation}' (key: {cameo_paper_key}) is not directly supported by embedded cameo layouts."); return
+    
     cameo_card_key = CameoCardSize.STANDARD
     try: paper_layout_config = LAYOUTS_DATA["paper_layouts"][cameo_paper_key]; card_layout_config = paper_layout_config["card_layouts"][cameo_card_key]
     except KeyError: print(f"Error: Layout for paper '{cameo_paper_key}' and card size '{cameo_card_key}' not found."); return

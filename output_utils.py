@@ -75,10 +75,14 @@ def create_png_output(image_sources: List[ImageSource], output_path_or_buffer: U
     pdf_name_label = kwargs.get("pdf_name_label")
     label_font_size_base = kwargs.get("cameo_label_font_size", 32)
     debug = kwargs.get("debug", False)
+    orientation = kwargs.get("orientation", "landscape")
 
-    if paper_type_arg.lower() == "letter": cameo_paper_key = CameoPaperSize.LETTER
-    elif paper_type_arg.lower() == "a4": cameo_paper_key = CameoPaperSize.A4
-    else: print(f"Error: --cameo PNG generation: Paper type '{paper_type_arg}' is not directly supported by embedded cameo layouts."); return
+    cameo_paper_key = paper_type_arg.lower()
+    if cameo_paper_key == "letter" and orientation == "portrait":
+        cameo_paper_key = CameoPaperSize.LETTER_PORTRAIT
+    
+    if cameo_paper_key not in LAYOUTS_DATA["paper_layouts"]:
+        print(f"Error: --cameo PNG generation: Paper type '{paper_type_arg}' with orientation '{orientation}' (key: {cameo_paper_key}) is not directly supported by embedded cameo layouts."); return
     
     cameo_card_key = CameoCardSize.STANDARD
     try: paper_layout_config = LAYOUTS_DATA["paper_layouts"][cameo_paper_key]; card_layout_config = paper_layout_config["card_layouts"][cameo_card_key]
