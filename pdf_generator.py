@@ -29,7 +29,9 @@ def calculate_max_print_bleed_cameo(x_pos: List[int], y_pos: List[int], width: i
         sorted_y_pos = sorted(y_pos); y_pos_0 = sorted_y_pos[0]; y_pos_1 = sorted_y_pos[1]
         y_border_max = math.ceil((y_pos_1 - y_pos_0 - height) / 2)
         if y_border_max < 0: y_border_max = 100000
-    return min(x_border_max, y_border_max) + 1
+    # Enforce a reasonable fixed bleed for Cameo (2mm = ~24px at 300DPI)
+    # This prevents 'massive borders' and overlapping reg marks.
+    return 24
 
 def draw_card_with_border_cameo(card_image: Image.Image, base_image: Image.Image, box: tuple[int, int, int, int], print_bleed: int, cell_bg_color_pil: Union[str, Tuple[int, int, int], None]):
     origin_x, origin_y, origin_width, origin_height = box

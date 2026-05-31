@@ -42,10 +42,10 @@ LAYOUTS_DATA: Dict[str, Any] = {
             "height": 3300,
             "card_layouts": {
                 "standard": {
-                    "width": 744,
-                    "height": 1038,
-                    "x_pos": [159, 903, 1647],
-                    "y_pos": [413, 1451],
+                    "width": 1038,
+                    "height": 744,
+                    "x_pos": [165, 1274],
+                    "y_pos": [408, 1223, 2038],
                     "template": "letter_3x2_portrait_v1"
                 }
             }
