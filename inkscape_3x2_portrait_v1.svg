@@ -64,20 +64,20 @@
        id="regmark-tr"
        style="fill:none;stroke:black;stroke-width:0.3" />
     <path
-       d="M 30 255 L 10 255 L 10 235"
+       d="M 30 247 L 10 247 L 10 227"
        id="regmark-bl"
        style="fill:none;stroke:black;stroke-width:0.3" />
     <path
-       d="M 10 30 L 30 30 L 30 10 L 185.9 10 L 185.9 30 L 205.9 30 L 205.9 255 L 30 255 L 30 235 L 10 235 Z"
+       d="M 10 30 L 30 30 L 30 10 L 185.9 10 L 185.9 30 L 205.9 30 L 205.9 247 L 30 247 L 30 227 L 10 227 Z"
        id="regmark-safe-area"
        style="fill:white;stroke:none" />
     <text
        x="23.0"
-       y="270.0"
+       y="255.0"
        id="regmark-notes"
        style="font-size:2.5px;fill:black;">
-       <tspan x="23.0" dy="0">mark distance from document: Left=10.0mm, Top=10.0mm; mark to mark distance: X=195.9mm, Y=245.0mm;</tspan>
-       <tspan x="23.0" dy="3.5">arms=20mm, thickness=0.3mm; Dashed cuts for perforation; 6mm gap between cards</tspan>
+       <tspan x="23.0" dy="0">mark distance from document: Left=10.0mm, Top=10.0mm; mark to mark distance: X=195.9mm, Y=237.0mm;</tspan>
+       <tspan x="23.0" dy="3.5">arms=20mm, thickness=0.3mm; Dashed cuts for perforation (3pt cut, 7pt stay)</tspan>
     </text>
   </g>
   <defs
@@ -87,65 +87,65 @@
      stroke-width="0.7"
      stroke="#ff0000"
      stroke-opacity="1"
-     stroke-dasharray="4,2"
+     stroke-dasharray="3,7"
      fill="none"
      fill-opacity="0"
      stroke-linecap="round"
      stroke-linejoin="round"
-     d="m 39.68,97.81 c 0,-8.2 3.69,-8.2 8.2,-8.2 l 232.72,0 c 4.51,0 8.2,3.69 8.2,8.2 l 0,162.16 c 0,4.51 -3.69,8.2 -8.2,8.2 l -232.72,0 c -4.51,0 -8.2,-3.69 -8.2,-8.2 z" />
+     d="m 51.17,100.63 c 0,-8.2 3.69,-8.2 8.2,-8.2 l 235.6,0 c 4.51,0 8.2,3.69 8.2,8.2 l 0,163.6 c 0,4.51 -3.69,8.2 -8.2,8.2 l -235.6,0 c -4.51,0 -8.2,-3.69 -8.2,-8.2 z" />
   <path
      id="Path1"
      stroke-width="0.7"
      stroke="#ff0000"
      stroke-opacity="1"
-     stroke-dasharray="4,2"
+     stroke-dasharray="3,7"
      fill="none"
      fill-opacity="0"
      stroke-linecap="round"
      stroke-linejoin="round"
-     d="m 305.76,97.81 c 0,-8.2 3.69,-8.2 8.2,-8.2 l 232.72,0 c 4.51,0 8.2,3.69 8.2,8.2 l 0,162.16 c 0,4.51 -3.69,8.2 -8.2,8.2 l -232.72,0 c -4.51,0 -8.2,-3.69 -8.2,-8.2 z" />
+     d="m 308.84,100.63 c 0,-8.2 3.69,-8.2 8.2,-8.2 l 235.6,0 c 4.51,0 8.2,3.69 8.2,8.2 l 0,163.6 c 0,4.51 -3.69,8.2 -8.2,8.2 l -235.6,0 c -4.51,0 -8.2,-3.69 -8.2,-8.2 z" />
   <path
      id="Path2"
      stroke-width="0.7"
      stroke="#ff0000"
      stroke-opacity="1"
-     stroke-dasharray="4,2"
+     stroke-dasharray="3,7"
      fill="none"
      fill-opacity="0"
      stroke-linecap="round"
      stroke-linejoin="round"
-     d="m 39.68,293.41 c 0,-8.2 3.69,-8.2 8.2,-8.2 l 232.72,0 c 4.51,0 8.2,3.69 8.2,8.2 l 0,162.16 c 0,4.51 -3.69,8.2 -8.2,8.2 l -232.72,0 c -4.51,0 -8.2,-3.69 -8.2,-8.2 z" />
+     d="m 51.17,282.02 c 0,-8.2 3.69,-8.2 8.2,-8.2 l 235.6,0 c 4.51,0 8.2,3.69 8.2,8.2 l 0,163.6 c 0,4.51 -3.69,8.2 -8.2,8.2 l -235.6,0 c -4.51,0 -8.2,-3.69 -8.2,-8.2 z" />
   <path
      id="Path3"
      stroke-width="0.7"
      stroke="#ff0000"
      stroke-opacity="1"
-     stroke-dasharray="4,2"
+     stroke-dasharray="3,7"
      fill="none"
      fill-opacity="0"
      stroke-linecap="round"
      stroke-linejoin="round"
-     d="m 305.76,293.41 c 0,-8.2 3.69,-8.2 8.2,-8.2 l 232.72,0 c 4.51,0 8.2,3.69 8.2,8.2 l 0,162.16 c 0,4.51 -3.69,8.2 -8.2,8.2 l -232.72,0 c -4.51,0 -8.2,-3.69 -8.2,-8.2 z" />
+     d="m 308.84,282.02 c 0,-8.2 3.69,-8.2 8.2,-8.2 l 235.6,0 c 4.51,0 8.2,3.69 8.2,8.2 l 0,163.6 c 0,4.51 -3.69,8.2 -8.2,8.2 l -235.6,0 c -4.51,0 -8.2,-3.69 -8.2,-8.2 z" />
   <path
      id="Path4"
      stroke-width="0.7"
      stroke="#ff0000"
      stroke-opacity="1"
-     stroke-dasharray="4,2"
+     stroke-dasharray="3,7"
      fill="none"
      fill-opacity="0"
      stroke-linecap="round"
      stroke-linejoin="round"
-     d="m 39.68,489.01 c 0,-8.2 3.69,-8.2 8.2,-8.2 l 232.72,0 c 4.51,0 8.2,3.69 8.2,8.2 l 0,162.16 c 0,4.51 -3.69,8.2 -8.2,8.2 l -232.72,0 c -4.51,0 -8.2,-3.69 -8.2,-8.2 z" />
+     d="m 51.17,463.41 c 0,-8.2 3.69,-8.2 8.2,-8.2 l 235.6,0 c 4.51,0 8.2,3.69 8.2,8.2 l 0,163.6 c 0,4.51 -3.69,8.2 -8.2,8.2 l -235.6,0 c -4.51,0 -8.2,-3.69 -8.2,-8.2 z" />
   <path
      id="Path5"
      stroke-width="0.7"
      stroke="#ff0000"
      stroke-opacity="1"
-     stroke-dasharray="4,2"
+     stroke-dasharray="3,7"
      fill="none"
      fill-opacity="0"
      stroke-linecap="round"
      stroke-linejoin="round"
-     d="m 305.76,489.01 c 0,-8.2 3.69,-8.2 8.2,-8.2 l 232.72,0 c 4.51,0 8.2,3.69 8.2,8.2 l 0,162.16 c 0,4.51 -3.69,8.2 -8.2,8.2 l -232.72,0 c -4.51,0 -8.2,-3.69 -8.2,-8.2 z" />
+     d="m 308.84,463.41 c 0,-8.2 3.69,-8.2 8.2,-8.2 l 235.6,0 c 4.51,0 8.2,3.69 8.2,8.2 l 0,163.6 c 0,4.51 -3.69,8.2 -8.2,8.2 l -235.6,0 c -4.51,0 -8.2,-3.69 -8.2,-8.2 z" />
 </svg>

@@ -36,10 +36,10 @@ def create_letter_portrait_registration():
     ]
     draw.polygon(tr_poly, fill="black")
 
-    # Bottom Left: Outer corner at (10.0, 255.0)
+    # Bottom Left: Outer corner at (10.0, 247.0)
     # L shape: Horizontal arm (right), Vertical arm (up)
     bl_x_outer = 10.0 * mm_to_px
-    bl_y_outer = 255.0 * mm_to_px
+    bl_y_outer = 247.0 * mm_to_px
 
     bl_poly = [
         (bl_x_outer + arm_px, bl_y_outer),        # Start of horizontal arm (right)
