@@ -68,6 +68,7 @@ def list_webdav_directory(base_url: str, path: str = "/", debug: bool = False) -
     Returns a list of dicts with 'name' and 'href' (as a full URL) keys.
     """
     url = urljoin(base_url, path)
+    if not url.endswith('/'): url += '/'
     if debug: print(f"DEBUG: Listing directory: {url}")
     
     # Build PROPFIND request body
@@ -97,7 +98,9 @@ def list_webdav_directory(base_url: str, path: str = "/", debug: bool = False) -
                 
                 if filename and filename.lower().endswith('.png'):
                     # Construct the full URL for the file
-                    full_url = urljoin(base_url, relative_href)
+                    # Using 'url' instead of 'base_url' ensures that if relative_href 
+                    # is just a filename, it's joined correctly to the path.
+                    full_url = urljoin(url, relative_href)
                     files.append({'name': filename, 'href': full_url})
         
         if debug: print(f"DEBUG: Found {len(files)} PNG files in directory")
