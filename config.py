@@ -45,11 +45,12 @@ LAYOUTS_DATA: Dict[str, Any] = {
                     "width": 1050,
                     "height": 750,
                     "x_pos": [129, 1369],
-                    "y_pos": [253, 1143, 2032],
+                    "y_pos": [246, 1143, 2041],
                     "template": "letter_3x2_portrait_v1"
                 }
             }
         },
+
 
 
 
