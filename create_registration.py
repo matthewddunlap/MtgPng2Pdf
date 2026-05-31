@@ -20,7 +20,7 @@ def create_letter_portrait_registration():
     draw.rectangle([tl_x, tl_y, tl_x + tl_w, tl_y + tl_h], fill="black")
 
     t_px = 0.3 * (300 / 25.4)
-    arm_px = 20.0 * mm_to_px
+    arm_px = 10.0 * mm_to_px
 
     # Top Right: Outer corner at (205.9, 10.0)
     # L shape: Horizontal arm (left), Vertical arm (down)
