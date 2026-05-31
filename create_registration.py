@@ -19,8 +19,8 @@ def create_letter_portrait_registration():
     tl_h = 5.0 * mm_to_px
     draw.rectangle([tl_x, tl_y, tl_x + tl_w, tl_y + tl_h], fill="black")
 
-    t_px = 1.5 * mm_to_px
-    arm_px = 10.0 * mm_to_px
+    t_px = 1.0 * mm_to_px
+    arm_px = 20.0 * mm_to_px
 
     # Top Right: Outer corner at (205.9, 10.0)
     # L shape: Horizontal arm (left), Vertical arm (down)
@@ -36,10 +36,10 @@ def create_letter_portrait_registration():
     ]
     draw.polygon(tr_poly, fill="black")
 
-    # Bottom Left: Outer corner at (10.0, 219.4)
+    # Bottom Left: Outer corner at (10.0, 235.0)
     # L shape: Horizontal arm (right), Vertical arm (up)
     bl_x_outer = 10.0 * mm_to_px
-    bl_y_outer = 219.4 * mm_to_px
+    bl_y_outer = 235.0 * mm_to_px
     bl_poly = [
         (bl_x_outer + arm_px, bl_y_outer),        # Start of horizontal arm (right)
         (bl_x_outer, bl_y_outer),                 # Outer corner

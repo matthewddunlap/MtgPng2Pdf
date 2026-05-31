@@ -62,20 +62,20 @@
     <path
        d="M 180.9 15 L 200.9 15 L 200.9 35"
        id="regmark-tr"
-       style="fill:none;stroke:black;stroke-width:0.3" />
+       style="fill:none;stroke:black;stroke-width:1.0" />
     <path
-       d="M 35 254.4 L 15 254.4 L 15 234.4"
+       d="M 35 239.4 L 15 239.4 L 15 219.4"
        id="regmark-bl"
-       style="fill:none;stroke:black;stroke-width:0.3" />
+       style="fill:none;stroke:black;stroke-width:1.0" />
     <path
-       d="M 15 35 L 35 35 L 35 15 L 180.9 15 L 180.9 35 L 200.9 35 L 200.9 254.4 L 35 254.4 L 35 234.4 L 15 234.4 Z"
+       d="M 15 35 L 35 35 L 35 15 L 180.9 15 L 180.9 35 L 200.9 35 L 200.9 239.4 L 35 239.4 L 35 219.4 L 15 219.4 Z"
        id="regmark-safe-area"
        style="fill:white;stroke:none" />
     <text
        x="38.0"
        y="261.9"
        id="regmark-notes"
-       style="font-size:2.5px;">mark distance from document: Left=15.0mm, Top=15.0mm; mark to mark distance: X=185.9mm, Y=239.4mm; </text>
+       style="font-size:2.5px;">mark distance from document: Left=15.0mm, Top=15.0mm; mark to mark distance: X=185.9mm, Y=224.4mm; </text>
   </g>
   <defs
      id="defs1" />
