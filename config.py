@@ -44,9 +44,9 @@ LAYOUTS_DATA: Dict[str, Any] = {
                 "standard": {
                     "width": 1050,
                     "height": 750,
-                    "x_pos": [129, 1369],
+                    "x_pos": [185, 1313],
                     "y_pos": [333, 1143, 1953],
-                    "template": "letter_3x2_portrait_v1"
+                    "template": "letter_3x2_portrait_v19"
                 }
             }
         },

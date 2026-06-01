@@ -20,7 +20,7 @@ def create_letter_portrait_registration():
     draw.rectangle([tl_x, tl_y, tl_x + tl_w, tl_y + tl_h], fill="black")
 
     t_px = 1.5 * mm_to_px
-    arm_px = 15.0 * mm_to_px
+    arm_px = 20.0 * mm_to_px
 
     # Top Right: Outer corner at (205.9, 10.0)
     # L shape: Horizontal arm (left), Vertical arm (down)
@@ -52,7 +52,7 @@ def create_letter_portrait_registration():
     draw.polygon(bl_poly, fill="black")
 
     img.save("assets/letter_portrait_registration.jpg", quality=95)
-    print("Created assets/letter_portrait_registration.jpg")
+    print("Created assets/letter_portrait_registration.jpg with 20mm arms.")
 
 if __name__ == "__main__":
     create_letter_portrait_registration()
