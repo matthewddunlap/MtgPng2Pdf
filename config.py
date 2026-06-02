@@ -6,8 +6,8 @@ from typing import Dict, Tuple, Set, Any
 from reportlab.lib.pagesizes import letter, legal
 
 # --- Configuration Constants for the image itself ---
-TARGET_IMG_WIDTH_INCHES = 2.5
-TARGET_IMG_HEIGHT_INCHES = 3.5
+TARGET_IMG_WIDTH_INCHES = 2.48
+TARGET_IMG_HEIGHT_INCHES = 3.46
 
 PAPER_SIZES_PT: Dict[str, Tuple[float, float]] = {
     "letter": letter, "legal": legal,
@@ -42,11 +42,11 @@ LAYOUTS_DATA: Dict[str, Any] = {
             "height": 3300,
             "card_layouts": {
                 "standard": {
-                    "width": 1050,
-                    "height": 750,
-                    "x_pos": [185, 1313],
-                    "y_pos": [333, 1143, 1953],
-                    "template": "letter_3x2_portrait_v19"
+                    "width": 1039,
+                    "height": 744,
+                    "x_pos": [191, 1319],
+                    "y_pos": [336, 1146, 1956],
+                    "template": "letter_3x2_portrait_v20"
                 }
             }
         },
