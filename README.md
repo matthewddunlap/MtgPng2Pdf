@@ -140,3 +140,18 @@ This command specifies the preferred order of art variants for Strip Mine from t
 ```bash
 python3 MtgPng2Pdf.py --image-server-base-url http://mtgproxy:4242 --image-server-path-prefix /local_art --image-server-png-dir card_images/7th/realesrgan_x2plus-4x/ --deck-list ../scry2cc/smashville-zoo.txt --cameo --cameo-label-font-size 48 --upload-to-server --image-server-deck-dir decks --overwrite-server-file --spell-set lea,leb,arn,atq,3ed,leg,drk,fem,4ed,ice,chr,hml,all --spell-set-mode force --card-set "Strip Mine:atq-c,atq-a,atq-b:force"
 ```
+
+### Inkscape settings for Silhouette
+## Cardstock
+X Offset 0.79
+Y Offset -0.79
+Pressure 12
+Speed 8
+Depth 4
+Reg left 10
+Reg top 10
+Reg X 195.9
+Rex Y 237
+
+## Possible direct command
+python sendto_silhouette.py --dashes=true --cuttingmat=no_mat --depth 4 --strategy=zorder --orient_paths=natural --fuse_paths=true --sw_clipping=true --overcut 0.5 --pressure 15 --sharpencorners_start 0.1 --sharpencorners_end 0.1 --speed 10 --tool autoblade --toolholder 1 --x-off 0.79 --x-off -0.79 --regmark=true --regsearch=true --reg-x 195.9 --reg-y 237 --rego-x 10 --rego-y 10 ~/Downloads/inkscape_3x2_portrait_v1.0.svg 

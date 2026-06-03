@@ -13,17 +13,20 @@ def normalize_card_name(name: str) -> str:
     """
     A robust function to normalize a card name for consistent key generation.
     Removes accents, punctuation, and whitespace, and converts to lowercase.
+    Matches ccAutomator's generate_safe_filename logic.
     """
     name = name.lower().strip()
     # Decompose unicode characters (like accents) into base characters
     normalized_name = unicodedata.normalize('NFKD', name).encode('ascii', 'ignore').decode('ascii')
-    # Replace spaces and underscores with hyphens
-    normalized_name = re.sub(r"[\s_]", "-", normalized_name)
+    # Replace spaces, underscores, and slashes with hyphens (Parity with ccAutomator)
+    normalized_name = re.sub(r"[\s_/:<>:\"\\|?*&]+", "-", normalized_name)
     # Remove common punctuation
-    normalized_name = re.sub(r"['\.:()\[\]]", "", normalized_name)
+    normalized_name = re.sub(r"['\.,\(\)\[\]]", "", normalized_name)
     # Remove any remaining non-alphanumeric characters (except hyphens)
     normalized_name = re.sub(r"[^a-z0-9-]", "", normalized_name)
-    return normalized_name.strip()
+    # Collapse multiple hyphens and strip from ends (Parity with ccAutomator)
+    normalized_name = re.sub(r"-+", "-", normalized_name)
+    return normalized_name.strip("-")
 
 # Data structure for a parsed deck list line
 class DecklistEntry(NamedTuple):
@@ -51,11 +54,41 @@ MOXFIELD_LINE_RE = re.compile(
 )
 
 def parse_moxfield_line(line: str) -> Optional[DecklistEntry]:
-    """Parses a deck list line into its components using the main regex."""
+    """Parses a deck list line into its components.
+    Supports:
+    1. Pipe Format: 1 Card Name | SET | NUM (or just 1 Card Name | SET)
+    2. Moxfield Format: 1 Card Name (SET) NUM
+    3. Simple Format: 1 Card Name
+    """
+    stripped_line = line.strip()
+    if not stripped_line:
+        return None
+
+    # --- Pass 1: Pipe Format (Parity with ccAutomator) ---
+    if '|' in stripped_line:
+        # Regex to handle leading count and then splitting by pipes
+        pipe_match = re.match(r"^\s*(?P<count>\d+)x?\s+(?P<rest>.+)$", stripped_line)
+        if pipe_match:
+            count = int(pipe_match.group('count'))
+            rest = pipe_match.group('rest')
+            parts = [p.strip() for p in rest.split('|')]
+            
+            card_name = parts[0]
+            set_code = parts[1].lower() if len(parts) > 1 else None
+            collector_number = parts[2].lower() if len(parts) > 2 else None
+            
+            return DecklistEntry(
+                count=count,
+                card_name=card_name,
+                set_code=set_code,
+                collector_number=collector_number,
+                original_line=line
+            )
+
+    # --- Pass 2: Moxfield Regex ---
     match = MOXFIELD_LINE_RE.match(line)
     if not match:
-        # Fallback for simple "COUNT NAME" format if the main regex fails.
-        # This handles lines without any (SET) information.
+        # --- Pass 3: Simple Fallback (COUNT NAME) ---
         parts = line.strip().split(maxsplit=1)
         if len(parts) == 2 and parts[0].isdigit():
             return DecklistEntry(
