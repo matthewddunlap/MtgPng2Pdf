@@ -78,6 +78,7 @@ def main():
     general_group.add_argument("--skip-tokens", action="store_true", help="Skip tokens from Token section.")
     general_group.add_argument("--update-token-sets", action="store_true", help="Update the token_sets.json file from Scryfall API and exit.")
     general_group.add_argument("--sort", action="store_true", help="Sort PNGs alphabetically (for directory scan mode or if --png-out-dir copies all from dir).")
+    general_group.add_argument("--alignment-sheet", action="store_true", help="Generate an alignment sheet with concentric rectangles 1mm apart instead of card images. Useful for calibrating cutters.")
     general_group.add_argument("--cameo", action="store_true", help="Use PIL-based PDF generation (modeled after create_pdf.py/utilities.py) when --output-format is pdf. This mode uses fixed layouts from an internal 'layouts.json' equivalent and ignores most page/layout/cut-line options. Currently best supports --paper-type letter or a4 (if in layouts). EXPECTS an 'assets' FOLDER with registration mark images (e.g., 'letter_registration.jpg') next to the script for proper Cameo output.")
     general_group.add_argument("--basic-land-set", type=str, default=None, help="Comma-separated list of set codes to filter basic lands by (e.g., 'lea,unh,neo'). Behavior is controlled by --basic-land-set-mode.")
     general_group.add_argument("--basic-land-set-mode", type=str, default="prefer", choices=["prefer", "force", "minimum"], help="Controls how --basic-land-set is applied. 'prefer' will use the specified sets if available, but fall back to any set if not. 'force' will fail if no cards from the specified sets are found. 'minimum' will use at least one from the specified sets and fallback for the rest.")
@@ -102,6 +103,11 @@ def main():
     pg_layout_group.add_argument("--cameo-orientation", type=str, default="landscape", choices=["landscape", "portrait"], help="[Cameo Mode Only] Orientation of the page layout.")
     pg_layout_group.add_argument("--cameo-label-font-size", type=int, default=32, help="[Cameo Mode Only] Font size for the page label. This is a base size in points, which is then scaled by DPI. A reasonable range is 24-48. Must be between 8 and 96.")
     pg_layout_group.add_argument("--pdf-quality", type=int, default=75, choices=range(1, 101), metavar="[1-100]", help="[PDF Cameo Mode Only] The quality of the embedded images in the PDF. 100 is the highest quality.")
+    
+    # --- Cameo Calibration Options ---
+    cameo_cal_group = parser.add_argument_group('Cameo Calibration Options (apply to --cameo mode)')
+    cameo_cal_group.add_argument("--cameo-global-offset", type=float, nargs=2, metavar=('DX_MM', 'DY_MM'), help="Global X and Y offset in mm for all cards.")
+    cameo_cal_group.add_argument("--cameo-slot-offset", type=str, action="append", help="Per-slot offset. Format: 'SLOT_NUM:DX_MM:DY_MM' (e.g., '1:-1.2:0.5'). Slot numbers start at 1.")
     
     # --- Cut Line Options ---
     cut_line_group = parser.add_argument_group('Cut Line Options (for PDF/PNG grid output; IGNORED by --cameo mode)')
@@ -226,8 +232,39 @@ def main():
     image_sources_to_process: List[ImageSource] = []
     missing_cards_from_deck: List[str] = []
     
+    # Define variables that might be set in alignment sheet mode
+    base_output_filename_final: str = ""
+    name_for_pdf_label: str = ""
+
     try:
-        if args.deck_list:
+        if args.alignment_sheet:
+            print("\n--- Alignment Sheet Mode ---")
+            if not args.cameo:
+                print("Error: --alignment-sheet currently only supports --cameo mode."); return
+            
+            cameo_paper_key = validated_paper_type
+            if cameo_paper_key == "letter" and args.cameo_orientation == "portrait":
+                cameo_paper_key = "letter_portrait"
+            
+            if cameo_paper_key not in LAYOUTS_DATA["paper_layouts"]:
+                print(f"Error: Alignment sheet: Paper type '{args.paper_type}' with orientation '{args.cameo_orientation}' is not supported."); return
+            
+            layout_config = LAYOUTS_DATA["paper_layouts"][cameo_paper_key]
+            card_layout = layout_config.get("card_layouts", {}).get("standard", {})
+            num_cols = len(card_layout.get("x_pos", []))
+            num_rows = len(card_layout.get("y_pos", []))
+            cards_per_page = num_cols * num_rows
+            
+            # Fill exactly one page with alignment patterns
+            image_sources_to_process = [ImageSource("ALIGNMENT_PATTERN")] * cards_per_page
+            
+            if args.output_file:
+                base_output_filename_final = args.output_file
+            else:
+                base_output_filename_final = "AlignmentSheet"
+            name_for_pdf_label = "Alignment Sheet"
+
+        elif args.deck_list:
             print("\n--- Deck List Mode ---")
             image_sources_to_process, missing_cards_from_deck, selection_manifest = process_deck_list(
                 args.deck_list, all_cards_map,
@@ -249,17 +286,18 @@ def main():
                 print_selection_manifest(selection_manifest)
 
             # Define base_output_filename_final and name_for_pdf_label here
-            base_output_filename_final: str
-            if args.output_file:
-                base_output_filename_final = args.output_file
-            elif args.deck_list:
-                dl_bn = os.path.splitext(os.path.basename(args.deck_list))[0]
-                dl_dir = os.path.dirname(args.deck_list)
-                base_output_filename_final = os.path.join(dl_dir, dl_bn) if dl_dir else dl_bn
-            else:
-                base_output_filename_final = "MtgProxyOutput"
+            if not base_output_filename_final:
+                if args.output_file:
+                    base_output_filename_final = args.output_file
+                elif args.deck_list:
+                    dl_bn = os.path.splitext(os.path.basename(args.deck_list))[0]
+                    dl_dir = os.path.dirname(args.deck_list)
+                    base_output_filename_final = os.path.join(dl_dir, dl_bn) if dl_dir else dl_bn
+                else:
+                    base_output_filename_final = "MtgProxyOutput"
 
-            name_for_pdf_label = os.path.basename(base_output_filename_final)
+            if not name_for_pdf_label:
+                name_for_pdf_label = os.path.basename(base_output_filename_final)
 
             if args.deck_manifest and args.deck_list and selection_manifest:
                 manifest_path = os.path.join(os.path.dirname(args.deck_list), "deck_manifest.png")
@@ -380,15 +418,33 @@ def main():
 
         elif not args.png_out_dir:
             print("\n--- Directory Scan Mode (for PDF/PNG grid) ---")
-            skipped_basics_count = 0
-            all_available_sources = [source for source_list in all_cards_map.values() for source in source_list]
-            if args.skip_basic_land and skipped_basics_count > 0:
-                print(f"  Skipped {skipped_basics_count} basic land files.")
+            if args.skip_basic_land:
+                image_sources_to_process = [
+                    source for name, sources in all_cards_map.items() 
+                    if name not in BASIC_LAND_NAMES
+                    for source in sources
+                ]
+                skipped_basics_count = sum(len(sources) for name, sources in all_cards_map.items() if name in BASIC_LAND_NAMES)
+                if skipped_basics_count > 0:
+                    print(f"  Skipped {skipped_basics_count} basic land files.")
+            else:
+                image_sources_to_process = [source for sources in all_cards_map.values() for source in sources]
+
             if not image_sources_to_process:
-                print(f"No suitable PNGs found. Exiting."); return
+                print("No suitable PNGs found. Exiting."); return
+            
             if args.sort:
                 image_sources_to_process.sort(key=lambda x: x.original)
             print(f"Found {len(image_sources_to_process)} total PNGs ({'sorted' if args.sort else 'unsorted'}).")
+
+            if not base_output_filename_final:
+                if args.output_file:
+                    base_output_filename_final = args.output_file
+                else:
+                    base_output_filename_final = "MtgProxyOutput"
+
+            if not name_for_pdf_label:
+                name_for_pdf_label = os.path.basename(base_output_filename_final)
         
         elif args.png_out_dir and not args.deck_list:
             print("Error: --png-out-dir specified without a --deck-list. Nothing to do."); return
@@ -415,6 +471,21 @@ def main():
                     output_target = f"{base_output_filename_final}.pdf"
                 
                 if args.cameo:
+                    # Parse slot offsets: "SLOT_NUM:DX:DY" -> {0: (dx, dy)}
+                    slot_offsets = {}
+                    if args.cameo_slot_offset:
+                        for offset_str in args.cameo_slot_offset:
+                            try:
+                                parts = offset_str.split(':')
+                                if len(parts) != 3: raise ValueError("Must be 'SLOT_NUM:DX:DY'")
+                                slot_num = int(parts[0])
+                                if slot_num < 1: raise ValueError("Slot number must be >= 1")
+                                dx = float(parts[1])
+                                dy = float(parts[2])
+                                slot_offsets[slot_num - 1] = (dx, dy)
+                            except ValueError as e:
+                                parser.error(f"Invalid --cameo-slot-offset '{offset_str}': {e}")
+
                     create_pdf_cameo_style(
                         image_sources=image_sources_to_process,
                         output_path_or_buffer=output_target,
@@ -425,7 +496,10 @@ def main():
                         label_font_size_base=args.cameo_label_font_size,
                         pdf_quality=args.pdf_quality,
                         debug=args.debug,
-                        orientation=args.cameo_orientation
+                        orientation=args.cameo_orientation,
+                        alignment_sheet=args.alignment_sheet,
+                        global_offset=tuple(args.cameo_global_offset) if args.cameo_global_offset else (0.0, 0.0),
+                        slot_offsets=slot_offsets
                     )
                 else:
                     create_pdf_grid(image_sources=image_sources_to_process, output_path_or_buffer=output_target, paper_type_str=validated_paper_type, image_spacing_pixels=args.image_spacing_pixels, dpi=args.dpi, page_margin_str=args.page_margin, page_background_color_str=args.page_bg_color, image_cell_background_color_str=args.image_cell_bg_color, cut_lines=args.cut_lines, cut_line_length_str=args.cut_line_length, cut_line_color_str=args.cut_line_color, cut_line_width_pt=args.cut_line_width_pt, debug=args.debug)
