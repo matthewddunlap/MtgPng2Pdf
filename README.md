@@ -155,3 +155,7 @@ Rex Y 237
 
 ## Possible direct command
 python sendto_silhouette.py --dashes=true --cuttingmat=no_mat --depth 4 --strategy=zorder --orient_paths=natural --fuse_paths=true --sw_clipping=true --overcut 0.5 --pressure 15 --sharpencorners_start 0.1 --sharpencorners_end 0.1 --speed 10 --tool autoblade --toolholder 1 --x-off 0.79 --x-off -0.79 --regmark=true --regsearch=true --reg-x 195.9 --reg-y 237 --rego-x 10 --rego-y 10 ~/Downloads/inkscape_3x2_portrait_v1.0.svg 
+
+
+## Generate PDF with card slot offsets
+python3 MtgPng2Pdf.py --image-server-base-url http://mtgproxy:4242 --image-server-path-prefix /local_art --cameo --cameo-orientation portrait --cameo-label-font-size 48 --upload-to-server --image-server-deck-dir decks --dpi 600 --alignment-sheet --cameo-slot-offset 1:0.0:0.1 --cameo-slot-offset 2:-0.4:0.25 --cameo-slot-offset 3:0.15:-0.25 --cameo-slot-offset 4:-0.2:-0.1 --cameo-slot-offset 5:0.4:-0.5 --cameo-slot-offset 6:0.1:-0.4 --overwrite-server-file

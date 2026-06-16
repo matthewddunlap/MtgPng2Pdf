@@ -82,18 +82,47 @@ def draw_card_layout_cameo(card_images: List[Image.Image], base_image: Image.Ima
         final_print_bleed_iterations = math.ceil(print_bleed_layout_units * ppi_ratio) + extend_corners_page_px_scaled
         draw_card_with_border_cameo(current_card_image, base_image, paste_box_for_card_content, final_print_bleed_iterations, cell_bg_color_pil)
 
-def generate_alignment_pattern(width_px: int, height_px: int, dpi: int) -> Image.Image:
-    """Generates a pattern of concentric rectangles spaced 1mm apart."""
+def generate_alignment_pattern(width_px: int, height_px: int, dpi: int, offset: Tuple[float, float] = (0.0, 0.0)) -> Image.Image:
+    """Generates a pattern of 5 concentric rectangles spaced 1mm apart, with offset text."""
     img = Image.new("RGBA", (width_px, height_px), (255, 255, 255, 255))
     draw = ImageDraw.Draw(img)
     mm_to_px = dpi / 25.4
-    current_offset = 0.0
-    while True:
+    
+    # Draw 5 rectangles (0mm to 4mm)
+    for i in range(5):
+        current_offset = i * mm_to_px
         x0 = round(current_offset); y0 = round(current_offset)
         x1 = width_px - round(current_offset) - 1; y1 = height_px - round(current_offset) - 1
         if x0 >= x1 or y0 >= y1: break
         draw.rectangle([x0, y0, x1, y1], outline="black", width=1)
-        current_offset += mm_to_px
+    
+    # Draw Offset Text in center
+    try:
+        font_size = round(16 * (dpi / 72.0)) # Scale 16pt to current DPI
+        font = None
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        font_path = os.path.join(script_dir, "assets", "DejaVuSans.ttf")
+        if os.path.exists(font_path):
+            font = ImageFont.truetype(font_path, font_size)
+        else:
+            font = ImageFont.load_default()
+            
+        dx, dy = offset
+        text = f"X: {dx:+.2f}\nY: {dy:+.2f}"
+        
+        # Center the text
+        if hasattr(draw, "textbbox"):
+            bbox = draw.textbbox((0, 0), text, font=font)
+            tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        else:
+            tw, th = draw.textsize(text, font=font)
+            
+        tx = (width_px - tw) // 2
+        ty = (height_px - th) // 2
+        draw.multiline_text((tx, ty), text, fill="black", font=font, align="center")
+    except Exception as e:
+        print(f"Warning: Could not draw offset text: {e}")
+        
     return img
 
 def create_pdf_cameo_style(image_sources: List[ImageSource], output_path_or_buffer: Union[str, io.BytesIO], paper_type_arg: str, target_dpi: int, image_cell_bg_color_str: str, pdf_name_label: Optional[str], label_font_size_base: int, pdf_quality: int, debug: bool = False, orientation: str = "landscape", alignment_sheet: bool = False, global_offset: Tuple[float, float] = (0.0, 0.0), slot_offsets: dict[int, Tuple[float, float]] = None):
@@ -140,12 +169,18 @@ def create_pdf_cameo_style(image_sources: List[ImageSource], output_path_or_buff
         current_page_pil_image = master_page_background.copy()
         image_sources_for_this_page = image_sources[page_start_index : page_start_index + num_cards_per_page]
         pil_card_images_for_page: List[Image.Image] = []
-        for img_source in image_sources_for_this_page:
+        for slot_idx, img_source in enumerate(image_sources_for_this_page):
             if alignment_sheet:
+                # Calculate total offset for this specific slot
+                gdx, gdy = global_offset
+                sdx, sdy = slot_offsets.get(slot_idx, (0.0, 0.0))
+                total_offset = (gdx + sdx, gdy + sdy)
+                
                 pil_card_images_for_page.append(generate_alignment_pattern(
                     math.floor(card_slot_width_layout * ppi_ratio),
                     math.floor(card_slot_height_layout * ppi_ratio),
-                    target_dpi
+                    target_dpi,
+                    offset=total_offset
                 ))
                 continue
             try:
