@@ -50,39 +50,44 @@ def draw_card_layout_cameo(card_images: List[Image.Image], base_image: Image.Ima
     mm_to_px_scaled = (300.0 * ppi_ratio) / 25.4
     if slot_offsets is None: slot_offsets = {}
     
+    # Standardized dimensions
+    sw_px = math.floor(card_width_layout * ppi_ratio)
+    sh_px = math.floor(card_height_layout * ppi_ratio)
+
     for i, original_card_pil_image in enumerate(card_images):
         if i >= num_slots_on_page: break
         current_card_image = original_card_pil_image
         
         # Auto-rotate if image orientation doesn't match slot orientation
-        slot_is_landscape = card_width_layout > card_height_layout
+        slot_is_landscape = sw_px > sh_px
         image_is_landscape = current_card_image.width > current_card_image.height
         if slot_is_landscape != image_is_landscape:
             current_card_image = current_card_image.transpose(Image.ROTATE_90)
 
-        # Base position
-        slot_x_on_page_scaled = math.floor(x_pos_layout[i % num_cols] * ppi_ratio)
-        slot_y_on_page_scaled = math.floor(y_pos_layout[i // num_cols] * ppi_ratio)
+        # Base position (standardized floor)
+        bx = math.floor(x_pos_layout[i % num_cols] * ppi_ratio)
+        by = math.floor(y_pos_layout[i // num_cols] * ppi_ratio)
         
-        # Apply offsets (mm to pixels)
-        # Note: We SUBTRACT offsets from the image position to move the cut RELATIVE to it.
-        # (Moving image left = Cut moves right)
+        # Apply offsets
         dx_mm, dy_mm = global_offset
         if i in slot_offsets:
             sdx, sdy = slot_offsets[i]
             dx_mm += sdx
             dy_mm += sdy
         
-        slot_x_on_page_scaled -= round(dx_mm * mm_to_px_scaled)
-        slot_y_on_page_scaled -= round(dy_mm * mm_to_px_scaled)
+        bx += round(dx_mm * mm_to_px_scaled)
+        by += round(dy_mm * mm_to_px_scaled)
 
         if crop_percentage > 0: card_w, card_h = current_card_image.size; crop_w_px = math.floor(card_w / 2 * (crop_percentage / 100.0)); crop_h_px = math.floor(card_h / 2 * (crop_percentage / 100.0)); current_card_image = current_card_image.crop((crop_w_px, crop_h_px, card_w - crop_w_px, card_h - crop_h_px))
         if extend_corners_src_px > 0: current_card_image = current_card_image.crop((extend_corners_src_px, extend_corners_src_px, current_card_image.width - extend_corners_src_px, current_card_image.height - extend_corners_src_px))
-        extend_corners_page_px_scaled = math.floor(extend_corners_src_px * ppi_ratio)
-        card_render_width_scaled = math.floor(card_width_layout * ppi_ratio) - (2 * extend_corners_page_px_scaled); card_render_height_scaled = math.floor(card_height_layout * ppi_ratio) - (2 * extend_corners_page_px_scaled)
-        paste_box_for_card_content = (slot_x_on_page_scaled + extend_corners_page_px_scaled, slot_y_on_page_scaled + extend_corners_page_px_scaled, card_render_width_scaled, card_render_height_scaled)
-        final_print_bleed_iterations = math.ceil(print_bleed_layout_units * ppi_ratio) + extend_corners_page_px_scaled
-        draw_card_with_border_cameo(current_card_image, base_image, paste_box_for_card_content, final_print_bleed_iterations, cell_bg_color_pil)
+        ec_scaled = math.floor(extend_corners_src_px * ppi_ratio)
+        
+        render_w = sw_px - (2 * ec_scaled)
+        render_h = sh_px - (2 * ec_scaled)
+        
+        paste_box = (bx + ec_scaled, by + ec_scaled, render_w, render_h)
+        bleed_px = math.ceil(print_bleed_layout_units * ppi_ratio) + ec_scaled
+        draw_card_with_border_cameo(current_card_image, base_image, paste_box, bleed_px, cell_bg_color_pil)
 
 def generate_alignment_pattern(width_px: int, height_px: int, dpi: int, offset: Tuple[float, float] = (0.0, 0.0), target: str = "pdf") -> Image.Image:
     """Generates a pattern of 5 concentric rectangles spaced 1mm apart, with offset text."""
@@ -127,9 +132,38 @@ def generate_alignment_pattern(width_px: int, height_px: int, dpi: int, offset: 
         
     return img
 
-def create_pdf_cameo_style(image_sources: List[ImageSource], output_path_or_buffer: Union[str, io.BytesIO], paper_type_arg: str, target_dpi: int, image_cell_bg_color_str: str, pdf_name_label: Optional[str], label_font_size_base: int, pdf_quality: int, debug: bool = False, orientation: str = "landscape", alignment_sheet: bool = False, global_offset: Tuple[float, float] = (0.0, 0.0), slot_offsets: dict[int, Tuple[float, float]] = None, offset_target: str = "pdf"):
+def draw_cut_overlay_cameo(base_image: Image.Image, num_rows: int, num_cols: int, x_pos_layout: List[int], y_pos_layout: List[int], card_width_layout: int, card_height_layout: int, ppi_ratio: float, global_offset: Tuple[float, float] = (0.0, 0.0), slot_offsets: dict[int, Tuple[float, float]] = None, offset_target: str = "pdf"):
+    """Draws a red line overlay representing the physical calibrated cutter path (Base + Offset)."""
+    draw = ImageDraw.Draw(base_image)
+    mm_to_px_scaled = (300.0 * ppi_ratio) / 25.4
+    if slot_offsets is None: slot_offsets = {}
+    radius_px = 8.2 * (300.0 * ppi_ratio / 72.0)
+    card_w_px = card_width_layout * ppi_ratio
+    card_h_px = card_height_layout * ppi_ratio
+
+    print(f"  Drawing proof overlay (Red=Cutter Path) for {num_rows * num_cols} slots...")
+    for i in range(num_rows * num_cols):
+        # Physical Cutter Path: Always Base + Offset
+        bx_base = x_pos_layout[i % num_cols] * ppi_ratio
+        by_base = y_pos_layout[i // num_cols] * ppi_ratio
+        
+        dx_mm, dy_mm = global_offset
+        if i in slot_offsets:
+            sdx, sdy = slot_offsets[i]
+            dx_mm += sdx
+            dy_mm += sdy
+        
+        bx_cal = bx_base + round(dx_mm * mm_to_px_scaled)
+        by_cal = by_base + round(dy_mm * mm_to_px_scaled)
+            
+        # Draw Calibrated Path (Red)
+        rect_cal = [bx_cal, by_cal, bx_cal + card_w_px, by_cal + card_h_px]
+        draw.rounded_rectangle(rect_cal, radius=radius_px, outline=(255, 0, 0), width=3)
+
+def create_pdf_cameo_style(image_sources: List[ImageSource], output_path_or_buffer: Union[str, io.BytesIO], paper_type_arg: str, target_dpi: int, image_cell_bg_color_str: str, pdf_name_label: Optional[str], label_font_size_base: int, pdf_quality: int, debug: bool = False, orientation: str = "landscape", alignment_sheet: bool = False, global_offset: Tuple[float, float] = (0.0, 0.0), slot_offsets: dict[int, Tuple[float, float]] = None, offset_target: str = "pdf", proof: bool = False, physical_offsets: bool = False):
     print(f"\n--- Cameo PDF Generation (PIL-based) ---")
     if alignment_sheet: print("  Alignment Sheet Mode Enabled")
+    if proof: print("  PROOF MODE ENABLED (Cutline overlay)")
     if global_offset != (0.0, 0.0): print(f"  Global Offset: {global_offset[0]}mm, {global_offset[1]}mm")
     if slot_offsets: print(f"  Slot Offsets: {len(slot_offsets)} slots customized")
     print(f"  Offset Target: {offset_target.upper()}")
@@ -205,6 +239,22 @@ def create_pdf_cameo_style(image_sources: List[ImageSource], output_path_or_buff
         current_slot_offsets = slot_offsets if offset_target == "pdf" else {}
         
         draw_card_layout_cameo(card_images=pil_card_images_for_page, base_image=current_page_pil_image, num_rows=num_rows, num_cols=num_cols, x_pos_layout=card_layout_config["x_pos"], y_pos_layout=card_layout_config["y_pos"], card_width_layout=card_slot_width_layout, card_height_layout=card_slot_height_layout, print_bleed_layout_units=max_print_bleed_layout_units, crop_percentage=crop_percentage_on_source, ppi_ratio=ppi_ratio, extend_corners_src_px=extend_corners_on_source_px, flip=False, cell_bg_color_pil=pil_cell_bg_color, global_offset=current_global_offset, slot_offsets=current_slot_offsets)
+        
+        # --- NEW: PROOF OVERLAY ---
+        if proof:
+            draw_cut_overlay_cameo(
+                base_image=current_page_pil_image,
+                num_rows=num_rows,
+                num_cols=num_cols,
+                x_pos_layout=card_layout_config["x_pos"],
+                y_pos_layout=card_layout_config["y_pos"],
+                card_width_layout=card_slot_width_layout,
+                card_height_layout=card_slot_height_layout,
+                ppi_ratio=ppi_ratio,
+                global_offset=global_offset,
+                slot_offsets=slot_offsets,
+                offset_target=offset_target
+            )
         page_num_for_label = (page_start_index // num_cards_per_page) + 1; template_name = card_layout_config.get("template", "unknown_template")
         base_label_part = f"template: {template_name}, sheet: {page_num_for_label}"
         if pdf_name_label: label_text = f"name: {pdf_name_label}, {base_label_part}"

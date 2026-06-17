@@ -111,6 +111,7 @@ def main():
     cameo_cal_group.add_argument("--cameo-slot-offset", type=str, action="append", help="Per-slot offset. Format: 'SLOT_NUM:DX_MM:DY_MM' (e.g., '1:-1.2:0.5'). Slot numbers start at 1.")
     cameo_cal_group.add_argument("--generate-svg", action="store_true", help="Generate an SVG cut file based on the layout and offsets.")
     cameo_cal_group.add_argument("--offset-target", type=str, default="pdf", choices=["pdf", "svg"], help="Target for offsets: 'pdf' (default) shifts the print, 'svg' shifts the cut lines.")
+    cameo_cal_group.add_argument("--proof", action="store_true", help="Overlay the intended cut lines on the PDF for digital proofing.")
     
     # --- Cut Line Options ---
     cut_line_group = parser.add_argument_group('Cut Line Options (for PDF/PNG grid output; IGNORED by --cameo mode)')
@@ -516,6 +517,38 @@ def main():
                                     with open(svg_local_path, 'rb') as f:
                                         upload_file_to_server(svg_upload_url, f.read(), 'image/svg+xml', args.debug)
 
+                    # --- Automatic Proof File Generation ---
+                    if args.proof and args.offset_target == "svg":
+                        proof_target_name = f"{base_output_filename_final}_proof"
+                        proof_pdf_filename = f"{os.path.basename(proof_target_name)}.pdf"
+                        proof_buffer = io.BytesIO() if args.upload_to_server else None
+                        proof_output = proof_buffer if args.upload_to_server else f"{proof_target_name}.pdf"
+                        
+                        print(f"\n--- Generating Automatic Proof PDF: {proof_pdf_filename} ---")
+                        create_pdf_cameo_style(
+                            image_sources=image_sources_to_process,
+                            output_path_or_buffer=proof_output,
+                            paper_type_arg=validated_paper_type,
+                            target_dpi=args.dpi,
+                            image_cell_bg_color_str=args.image_cell_bg_color,
+                            pdf_name_label=f"{name_for_pdf_label} (PROOF)",
+                            label_font_size_base=args.cameo_label_font_size,
+                            pdf_quality=args.pdf_quality,
+                            debug=args.debug,
+                            orientation=args.cameo_orientation,
+                            alignment_sheet=args.alignment_sheet,
+                            global_offset=tuple(args.cameo_global_offset) if args.cameo_global_offset else (0.0, 0.0),
+                            slot_offsets=slot_offsets,
+                            offset_target="pdf", # Use PDF method (shifted images)
+                            proof=True,
+                            physical_offsets=True # Force proof line to show calibration
+                        )
+                        
+                        if args.upload_to_server and proof_buffer:
+                            proof_path_parts = [p.strip('/') for p in [args.image_server_path_prefix, args.image_server_deck_dir, proof_pdf_filename] if p.strip('/')]
+                            proof_upload_url = f"{args.image_server_base_url.rstrip('/')}{'/' + '/'.join(proof_path_parts)}"
+                            upload_file_to_server(proof_upload_url, proof_buffer.getvalue(), 'application/pdf', args.debug)
+
                     create_pdf_cameo_style(
                         image_sources=image_sources_to_process,
                         output_path_or_buffer=output_target,
@@ -530,7 +563,8 @@ def main():
                         alignment_sheet=args.alignment_sheet,
                         global_offset=tuple(args.cameo_global_offset) if args.cameo_global_offset else (0.0, 0.0),
                         slot_offsets=slot_offsets,
-                        offset_target=args.offset_target
+                        offset_target=args.offset_target,
+                        proof=args.proof
                     )
                 else:
                     create_pdf_grid(image_sources=image_sources_to_process, output_path_or_buffer=output_target, paper_type_str=validated_paper_type, image_spacing_pixels=args.image_spacing_pixels, dpi=args.dpi, page_margin_str=args.page_margin, page_background_color_str=args.page_bg_color, image_cell_background_color_str=args.image_cell_bg_color, cut_lines=args.cut_lines, cut_line_length_str=args.cut_line_length, cut_line_color_str=args.cut_line_color, cut_line_width_pt=args.cut_line_width_pt, debug=args.debug)
