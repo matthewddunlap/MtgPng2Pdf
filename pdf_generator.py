@@ -65,14 +65,16 @@ def draw_card_layout_cameo(card_images: List[Image.Image], base_image: Image.Ima
         slot_y_on_page_scaled = math.floor(y_pos_layout[i // num_cols] * ppi_ratio)
         
         # Apply offsets (mm to pixels)
+        # Note: We SUBTRACT offsets from the image position to move the cut RELATIVE to it.
+        # (Moving image left = Cut moves right)
         dx_mm, dy_mm = global_offset
         if i in slot_offsets:
             sdx, sdy = slot_offsets[i]
             dx_mm += sdx
             dy_mm += sdy
         
-        slot_x_on_page_scaled += round(dx_mm * mm_to_px_scaled)
-        slot_y_on_page_scaled += round(dy_mm * mm_to_px_scaled)
+        slot_x_on_page_scaled -= round(dx_mm * mm_to_px_scaled)
+        slot_y_on_page_scaled -= round(dy_mm * mm_to_px_scaled)
 
         if crop_percentage > 0: card_w, card_h = current_card_image.size; crop_w_px = math.floor(card_w / 2 * (crop_percentage / 100.0)); crop_h_px = math.floor(card_h / 2 * (crop_percentage / 100.0)); current_card_image = current_card_image.crop((crop_w_px, crop_h_px, card_w - crop_w_px, card_h - crop_h_px))
         if extend_corners_src_px > 0: current_card_image = current_card_image.crop((extend_corners_src_px, extend_corners_src_px, current_card_image.width - extend_corners_src_px, current_card_image.height - extend_corners_src_px))
@@ -82,7 +84,7 @@ def draw_card_layout_cameo(card_images: List[Image.Image], base_image: Image.Ima
         final_print_bleed_iterations = math.ceil(print_bleed_layout_units * ppi_ratio) + extend_corners_page_px_scaled
         draw_card_with_border_cameo(current_card_image, base_image, paste_box_for_card_content, final_print_bleed_iterations, cell_bg_color_pil)
 
-def generate_alignment_pattern(width_px: int, height_px: int, dpi: int, offset: Tuple[float, float] = (0.0, 0.0)) -> Image.Image:
+def generate_alignment_pattern(width_px: int, height_px: int, dpi: int, offset: Tuple[float, float] = (0.0, 0.0), target: str = "pdf") -> Image.Image:
     """Generates a pattern of 5 concentric rectangles spaced 1mm apart, with offset text."""
     img = Image.new("RGBA", (width_px, height_px), (255, 255, 255, 255))
     draw = ImageDraw.Draw(img)
@@ -108,7 +110,7 @@ def generate_alignment_pattern(width_px: int, height_px: int, dpi: int, offset: 
             font = ImageFont.load_default()
             
         dx, dy = offset
-        text = f"X: {dx:+.2f}\nY: {dy:+.2f}"
+        text = f"X: {dx:+.2f} ({target.upper()})\nY: {dy:+.2f} ({target.upper()})"
         
         # Center the text
         if hasattr(draw, "textbbox"):
@@ -125,11 +127,12 @@ def generate_alignment_pattern(width_px: int, height_px: int, dpi: int, offset: 
         
     return img
 
-def create_pdf_cameo_style(image_sources: List[ImageSource], output_path_or_buffer: Union[str, io.BytesIO], paper_type_arg: str, target_dpi: int, image_cell_bg_color_str: str, pdf_name_label: Optional[str], label_font_size_base: int, pdf_quality: int, debug: bool = False, orientation: str = "landscape", alignment_sheet: bool = False, global_offset: Tuple[float, float] = (0.0, 0.0), slot_offsets: dict[int, Tuple[float, float]] = None):
+def create_pdf_cameo_style(image_sources: List[ImageSource], output_path_or_buffer: Union[str, io.BytesIO], paper_type_arg: str, target_dpi: int, image_cell_bg_color_str: str, pdf_name_label: Optional[str], label_font_size_base: int, pdf_quality: int, debug: bool = False, orientation: str = "landscape", alignment_sheet: bool = False, global_offset: Tuple[float, float] = (0.0, 0.0), slot_offsets: dict[int, Tuple[float, float]] = None, offset_target: str = "pdf"):
     print(f"\n--- Cameo PDF Generation (PIL-based) ---")
     if alignment_sheet: print("  Alignment Sheet Mode Enabled")
     if global_offset != (0.0, 0.0): print(f"  Global Offset: {global_offset[0]}mm, {global_offset[1]}mm")
     if slot_offsets: print(f"  Slot Offsets: {len(slot_offsets)} slots customized")
+    print(f"  Offset Target: {offset_target.upper()}")
     
     if isinstance(output_path_or_buffer, str): print(f"Output file: {output_path_or_buffer}")
     else: print(f"Output target: In-memory buffer (for server upload)")
@@ -171,18 +174,20 @@ def create_pdf_cameo_style(image_sources: List[ImageSource], output_path_or_buff
         pil_card_images_for_page: List[Image.Image] = []
         for slot_idx, img_source in enumerate(image_sources_for_this_page):
             if alignment_sheet:
-                # Calculate total offset for this specific slot
+                # Calculate total offset for label/pattern
                 gdx, gdy = global_offset
-                sdx, sdy = slot_offsets.get(slot_idx, (0.0, 0.0))
+                sdx, sdy = slot_offsets.get(slot_idx, (0.0, 0.0)) if slot_offsets else (0.0, 0.0)
                 total_offset = (gdx + sdx, gdy + sdy)
-                
+
                 pil_card_images_for_page.append(generate_alignment_pattern(
                     math.floor(card_slot_width_layout * ppi_ratio),
                     math.floor(card_slot_height_layout * ppi_ratio),
                     target_dpi,
-                    offset=total_offset
+                    offset=total_offset,
+                    target=offset_target
                 ))
                 continue
+
             try:
                 local_path = img_source.get_local_path(debug)
                 if local_path: img = Image.open(local_path); img = img.convert('RGBA'); pil_card_images_for_page.append(img)
@@ -194,7 +199,12 @@ def create_pdf_cameo_style(image_sources: List[ImageSource], output_path_or_buff
                 try: font_placeholder = ImageFont.load_default(); draw_placeholder.text((5,5), "Error\nLoading", fill="black", font=font_placeholder)
                 except: draw_placeholder.text((5,5), "Error", fill="black")
                 pil_card_images_for_page.append(placeholder)
-        draw_card_layout_cameo(card_images=pil_card_images_for_page, base_image=current_page_pil_image, num_rows=num_rows, num_cols=num_cols, x_pos_layout=card_layout_config["x_pos"], y_pos_layout=card_layout_config["y_pos"], card_width_layout=card_slot_width_layout, card_height_layout=card_slot_height_layout, print_bleed_layout_units=max_print_bleed_layout_units, crop_percentage=crop_percentage_on_source, ppi_ratio=ppi_ratio, extend_corners_src_px=extend_corners_on_source_px, flip=False, cell_bg_color_pil=pil_cell_bg_color, global_offset=global_offset, slot_offsets=slot_offsets)
+        
+        # Only pass physical offsets to the layout engine if targeting PDF
+        current_global_offset = global_offset if offset_target == "pdf" else (0.0, 0.0)
+        current_slot_offsets = slot_offsets if offset_target == "pdf" else {}
+        
+        draw_card_layout_cameo(card_images=pil_card_images_for_page, base_image=current_page_pil_image, num_rows=num_rows, num_cols=num_cols, x_pos_layout=card_layout_config["x_pos"], y_pos_layout=card_layout_config["y_pos"], card_width_layout=card_slot_width_layout, card_height_layout=card_slot_height_layout, print_bleed_layout_units=max_print_bleed_layout_units, crop_percentage=crop_percentage_on_source, ppi_ratio=ppi_ratio, extend_corners_src_px=extend_corners_on_source_px, flip=False, cell_bg_color_pil=pil_cell_bg_color, global_offset=current_global_offset, slot_offsets=current_slot_offsets)
         page_num_for_label = (page_start_index // num_cards_per_page) + 1; template_name = card_layout_config.get("template", "unknown_template")
         base_label_part = f"template: {template_name}, sheet: {page_num_for_label}"
         if pdf_name_label: label_text = f"name: {pdf_name_label}, {base_label_part}"

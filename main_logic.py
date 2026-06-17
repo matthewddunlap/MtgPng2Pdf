@@ -14,6 +14,7 @@ from output_utils import write_missing_cards_file, print_selection_manifest, cop
 from parsing_utils import parse_paper_type, normalize_card_name
 from pdf_generator import create_pdf_cameo_style, create_pdf_grid
 from manifest_generator import generate_deck_manifest_image
+from svg_generator import generate_cut_svg
 from web_utils import check_server_file_exists, upload_file_to_server, cleanup_temp_files
 from token_set_manager import load_token_sets, update_token_sets_from_api
 
@@ -108,6 +109,8 @@ def main():
     cameo_cal_group = parser.add_argument_group('Cameo Calibration Options (apply to --cameo mode)')
     cameo_cal_group.add_argument("--cameo-global-offset", type=float, nargs=2, metavar=('DX_MM', 'DY_MM'), help="Global X and Y offset in mm for all cards.")
     cameo_cal_group.add_argument("--cameo-slot-offset", type=str, action="append", help="Per-slot offset. Format: 'SLOT_NUM:DX_MM:DY_MM' (e.g., '1:-1.2:0.5'). Slot numbers start at 1.")
+    cameo_cal_group.add_argument("--generate-svg", action="store_true", help="Generate an SVG cut file based on the layout and offsets.")
+    cameo_cal_group.add_argument("--offset-target", type=str, default="pdf", choices=["pdf", "svg"], help="Target for offsets: 'pdf' (default) shifts the print, 'svg' shifts the cut lines.")
     
     # --- Cut Line Options ---
     cut_line_group = parser.add_argument_group('Cut Line Options (for PDF/PNG grid output; IGNORED by --cameo mode)')
@@ -486,6 +489,33 @@ def main():
                             except ValueError as e:
                                 parser.error(f"Invalid --cameo-slot-offset '{offset_str}': {e}")
 
+                    # --- SVG Generation Mode ---
+                    if args.generate_svg:
+                        svg_bn = f"{os.path.basename(base_output_filename_final)}.svg"
+                        svg_local_path = f"{base_output_filename_final}.svg"
+                        if generate_cut_svg(
+                            paper_type_key=cameo_paper_key,
+                            output_path=svg_local_path,
+                            global_offset=tuple(args.cameo_global_offset) if args.cameo_global_offset else (0.0, 0.0),
+                            slot_offsets=slot_offsets,
+                            apply_offsets=(args.offset_target == "svg")
+                        ):
+                            if args.upload_to_server:
+                                print("\n--- Uploading SVG to Server ---")
+                                svg_path_parts = [p.strip('/') for p in [args.image_server_path_prefix, args.image_server_deck_dir, svg_bn] if p.strip('/')]
+                                full_svg_path_for_upload = '/' + '/'.join(svg_path_parts)
+                                svg_upload_url = f"{args.image_server_base_url.rstrip('/')}{full_svg_path_for_upload}"
+
+                                if not args.overwrite_server_file:
+                                    if check_server_file_exists(svg_upload_url, args.debug):
+                                        print(f"Error: SVG already exists at {svg_upload_url}. Skipping upload.")
+                                    else:
+                                        with open(svg_local_path, 'rb') as f:
+                                            upload_file_to_server(svg_upload_url, f.read(), 'image/svg+xml', args.debug)
+                                else:
+                                    with open(svg_local_path, 'rb') as f:
+                                        upload_file_to_server(svg_upload_url, f.read(), 'image/svg+xml', args.debug)
+
                     create_pdf_cameo_style(
                         image_sources=image_sources_to_process,
                         output_path_or_buffer=output_target,
@@ -499,7 +529,8 @@ def main():
                         orientation=args.cameo_orientation,
                         alignment_sheet=args.alignment_sheet,
                         global_offset=tuple(args.cameo_global_offset) if args.cameo_global_offset else (0.0, 0.0),
-                        slot_offsets=slot_offsets
+                        slot_offsets=slot_offsets,
+                        offset_target=args.offset_target
                     )
                 else:
                     create_pdf_grid(image_sources=image_sources_to_process, output_path_or_buffer=output_target, paper_type_str=validated_paper_type, image_spacing_pixels=args.image_spacing_pixels, dpi=args.dpi, page_margin_str=args.page_margin, page_background_color_str=args.page_bg_color, image_cell_background_color_str=args.image_cell_bg_color, cut_lines=args.cut_lines, cut_line_length_str=args.cut_line_length, cut_line_color_str=args.cut_line_color, cut_line_width_pt=args.cut_line_width_pt, debug=args.debug)
