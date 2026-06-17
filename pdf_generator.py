@@ -82,7 +82,7 @@ def draw_card_layout_cameo(card_images: List[Image.Image], base_image: Image.Ima
         final_print_bleed_iterations = math.ceil(print_bleed_layout_units * ppi_ratio) + extend_corners_page_px_scaled
         draw_card_with_border_cameo(current_card_image, base_image, paste_box_for_card_content, final_print_bleed_iterations, cell_bg_color_pil)
 
-def generate_alignment_pattern(width_px: int, height_px: int, dpi: int, offset: Tuple[float, float] = (0.0, 0.0)) -> Image.Image:
+def generate_alignment_pattern(width_px: int, height_px: int, dpi: int, offset: Tuple[float, float] = (0.0, 0.0), slot_num: int = None) -> Image.Image:
     """Generates a pattern of 5 concentric rectangles spaced 1mm apart, with offset text."""
     img = Image.new("RGBA", (width_px, height_px), (255, 255, 255, 255))
     draw = ImageDraw.Draw(img)
@@ -108,7 +108,10 @@ def generate_alignment_pattern(width_px: int, height_px: int, dpi: int, offset: 
             font = ImageFont.load_default()
             
         dx, dy = offset
-        text = f"X: {dx:+.2f}\nY: {dy:+.2f}"
+        text = ""
+        if slot_num is not None:
+            text += f"Slot: {slot_num}\n"
+        text += f"X: {dx:+.2f}\nY: {dy:+.2f}"
         
         # Center the text
         if hasattr(draw, "textbbox"):
@@ -176,11 +179,14 @@ def create_pdf_cameo_style(image_sources: List[ImageSource], output_path_or_buff
                 sdx, sdy = slot_offsets.get(slot_idx, (0.0, 0.0))
                 total_offset = (gdx + sdx, gdy + sdy)
                 
+                print(f"  Slot {slot_idx + 1} Offset: X={total_offset[0]:+.2f}mm, Y={total_offset[1]:+.2f}mm")
+                
                 pil_card_images_for_page.append(generate_alignment_pattern(
                     math.floor(card_slot_width_layout * ppi_ratio),
                     math.floor(card_slot_height_layout * ppi_ratio),
                     target_dpi,
-                    offset=total_offset
+                    offset=total_offset,
+                    slot_num=slot_idx + 1
                 ))
                 continue
             try:
