@@ -22,56 +22,104 @@ def make_broken_bezier(p0, p1, p2, p3, r, gap_pt=1.0):
     return (f"M {b1_left[0][0]:.2f},{b1_left[0][1]:.2f} C {b1_left[1][0]:.2f},{b1_left[1][1]:.2f} {b1_left[2][0]:.2f},{b1_left[2][1]:.2f} {b1_left[3][0]:.2f},{b1_left[3][1]:.2f}",
             f"M {b2_right[0][0]:.2f},{b2_right[0][1]:.2f} C {b2_right[1][0]:.2f},{b2_right[1][1]:.2f} {b2_right[2][0]:.2f},{b2_right[2][1]:.2f} {b2_right[3][0]:.2f},{b2_right[3][1]:.2f}")
 
-def get_path_segments(x_min, y_min, x_max, y_max, r, mode='all', gap=1.0):
+def get_path_segments(x_min, y_min, x_max, y_max, r, mode='all', start_at=None, gap=1.0):
     center_x = (x_min + x_max) / 2
     center_y = (y_min + y_max) / 2
     half_gap = gap / 2.0
     top_y, bottom_y = y_min, y_max
     left_x, right_x = x_min, x_max
     k = 4.51
-    all_segments = []
     
-    def add_edge(x1, y1, x2, y2, is_broken):
-        if is_broken:
-            cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
-            if x1 == x2:
-                all_segments.append(f"M {x1:.2f},{y1:.2f} L {x1:.2f},{cy - half_gap:.2f}")
-                all_segments.append(f"M {x1:.2f},{cy + half_gap:.2f} L {x1:.2f},{y2:.2f}")
-            else:
-                all_segments.append(f"M {x1:.2f},{y1:.2f} L {cx - half_gap:.2f},{y1:.2f}")
-                all_segments.append(f"M {cx + half_gap:.2f},{y1:.2f} L {x2:.2f},{y1:.2f}")
-        else:
-            all_segments.append(f"M {x1:.2f},{y1:.2f} L {x2:.2f},{y2:.2f}")
+    if start_at is None:
+        start_at = 'radii' if mode == 'radii' else 'edge'
 
-    def add_corner(p0, p1, p2, p3, is_broken):
+    # We generate 16 potential segments
+    # S0, S1 (Top Edge)
+    # S2, S3 (TR Corner)
+    # S4, S5 (Right Edge)
+    # S6, S7 (BR Corner)
+    # S8, S9 (Bottom Edge)
+    # S10, S11 (BL Corner)
+    # S12, S13 (Left Edge)
+    # S14, S15 (TL Corner)
+    
+    def get_edge_parts(x1, y1, x2, y2, is_broken):
+        cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
+        if is_broken:
+            if x1 == x2: # Vertical
+                return [f"M {x1:.2f},{y1:.2f} L {x1:.2f},{cy - half_gap:.2f}",
+                        f"M {x1:.2f},{cy + half_gap:.2f} L {x1:.2f},{y2:.2f}"]
+            else: # Horizontal
+                return [f"M {x1:.2f},{y1:.2f} L {cx - half_gap:.2f},{y1:.2f}",
+                        f"M {cx + half_gap:.2f},{y1:.2f} L {x2:.2f},{y1:.2f}"]
+        else:
+            # Still split at center for rotation logic, but no gap
+            if x1 == x2:
+                return [f"M {x1:.2f},{y1:.2f} L {x1:.2f},{cy:.2f}",
+                        f"M {x1:.2f},{cy:.2f} L {x1:.2f},{y2:.2f}"]
+            else:
+                return [f"M {x1:.2f},{y1:.2f} L {cx:.2f},{y1:.2f}",
+                        f"M {cx:.2f},{y1:.2f} L {x2:.2f},{y1:.2f}"]
+
+    def get_corner_parts(p0, p1, p2, p3, is_broken):
         if is_broken:
             s1, s2 = make_broken_bezier(p0, p1, p2, p3, r, gap)
-            all_segments.extend([s1, s2])
+            return [s1, s2]
         else:
-            all_segments.append(f"M {p0[0]:.2f},{p0[1]:.2f} C {p1[0]:.2f},{p1[1]:.2f} {p2[0]:.2f},{p2[1]:.2f} {p3[0]:.2f},{p3[1]:.2f}")
+            # Split at t=0.5 for rotation logic
+            b1, b2 = split_bezier(p0, p1, p2, p3, 0.5)
+            return [f"M {b1[0][0]:.2f},{b1[0][1]:.2f} C {b1[1][0]:.2f},{b1[1][1]:.2f} {b1[2][0]:.2f},{b1[2][1]:.2f} {b1[3][0]:.2f},{b1[3][1]:.2f}",
+                    f"M {b2[0][0]:.2f},{b2[0][1]:.2f} C {b2[1][0]:.2f},{b2[1][1]:.2f} {b2[2][0]:.2f},{b2[2][1]:.2f} {b2[3][0]:.2f},{b2[3][1]:.2f}"]
 
     break_edges = mode in ['all', 'edges']
     break_radii = mode in ['all', 'radii']
 
-    add_edge(center_x, top_y, x_max - r, top_y, break_edges)
-    add_corner((x_max - r, y_min), (x_max - r + k, y_min), (x_max, y_min + r - k), (x_max, y_min + r), break_radii)
-    add_edge(x_max, y_min + r, x_max, center_y, break_edges)
-    add_edge(x_max, center_y, x_max, y_max - r, break_edges)
-    add_corner((x_max, y_max - r), (x_max, y_max - r + k), (x_max - r + k, y_max), (x_max - r, y_max), break_radii)
-    add_edge(x_max - r, y_max, center_x, y_max, break_edges)
-    add_edge(center_x, y_max, x_min + r, y_max, break_edges)
-    add_corner((x_min + r, y_max), (x_min + r - k, y_max), (x_min, y_max - r + k), (x_min, y_max - r), break_radii)
-    add_edge(x_min, y_max - r, x_min, center_y, break_edges)
-    add_edge(x_min, center_y, x_min, y_min + r, break_edges)
-    add_corner((x_min, y_min + r), (x_min, y_min + r - k), (x_min + r - k, y_min), (x_min + r, y_min), break_radii)
-    add_edge(x_min + r, y_min, center_x, y_min, break_edges)
-    return " ".join(all_segments)
+    all_parts = []
+    # 0,1: Top Edge (split at center) -> We need to handle the loop correctly.
+    # Let's define the points from Top Mid clockwise.
+    # Parts:
+    # TopRightHalf, TR1, TR2, RightTopHalf, RightBottomHalf, BR1, BR2, BottomRightHalf, BottomLeftHalf, BL1, BL2, LeftBottomHalf, LeftTopHalf, TL1, TL2, TopLeftHalf
+    
+    # 1. Top Edge
+    top_parts = get_edge_parts(center_x, top_y, x_max - r, top_y, False) # We don't break the half-edges themselves
+    # Wait, the 16 segments logic:
+    # S0: M_Top to End_Top (TopRightHalf)
+    # S1: End_Top to M_TR (TR_Part1)
+    # S2: M_TR to Start_Right (TR_Part2)
+    # S3: Start_Right to M_Right (RightTopHalf)
+    # ...
+    
+    # Let's build them in order
+    s0 = f"M {center_x + (half_gap if break_edges else 0):.2f},{top_y:.2f} L {x_max - r:.2f},{top_y:.2f}"
+    s1, s2 = get_corner_parts((x_max - r, y_min), (x_max - r + k, y_min), (x_max, y_min + r - k), (x_max, y_min + r), break_radii)
+    s3 = f"M {x_max:.2f},{y_min + r:.2f} L {x_max:.2f},{center_y - (half_gap if break_edges else 0):.2f}"
+    
+    s4 = f"M {x_max:.2f},{center_y + (half_gap if break_edges else 0):.2f} L {x_max:.2f},{y_max - r:.2f}"
+    s5, s6 = get_corner_parts((x_max, y_max - r), (x_max, y_max - r + k), (x_max - r + k, y_max), (x_max - r, y_max), break_radii)
+    s7 = f"M {x_max - r:.2f},{y_max:.2f} L {center_x + (half_gap if break_edges else 0):.2f},{y_max:.2f}"
+    
+    s8 = f"M {center_x - (half_gap if break_edges else 0):.2f},{y_max:.2f} L {x_min + r:.2f},{y_max:.2f}"
+    s9, s10 = get_corner_parts((x_min + r, y_max), (x_min + r - k, y_max), (x_min, y_max - r + k), (x_min, y_max - r), break_radii)
+    s11 = f"M {x_min:.2f},{y_max - r:.2f} L {x_min:.2f},{center_y + (half_gap if break_edges else 0):.2f}"
+    
+    s12 = f"M {x_min:.2f},{center_y - (half_gap if break_edges else 0):.2f} L {x_min:.2f},{y_min + r:.2f}"
+    s13, s14 = get_corner_parts((x_min, y_min + r), (x_min, y_min + r - k), (x_min + r - k, y_min), (x_min + r, y_min), break_radii)
+    s15 = f"M {x_min + r:.2f},{y_min:.2f} L {center_x - (half_gap if break_edges else 0):.2f},{y_min:.2f}"
+    
+    parts = [s0, s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11, s12, s13, s14, s15]
+    
+    if start_at == 'radii':
+        # Start at s2 (after TR gap)
+        parts = parts[2:] + parts[:2]
+    
+    return " ".join(parts)
 
 def main():
     parser = argparse.ArgumentParser(description='Generate broken SVG paths for card slots.')
     parser.add_argument('mode', choices=['all', 'edges', 'radii'], help='Where to place the 1pt breaks.')
     parser.add_argument('--template', default='inkscape_3x2_portrait_v1.0_uniform.svg', help='Uniform SVG template.')
     parser.add_argument('--output', help='Output SVG filename.')
+    parser.add_argument('--start', choices=['edge', 'radii'], help='Where to start the cut.')
     args = parser.parse_args()
 
     output_file = args.output
@@ -93,7 +141,7 @@ def main():
     for row in range(3):
         for col in range(2):
             i = row * 2 + col
-            d = get_path_segments(x_min + col*dx, y_min + row*dy, x_max + col*dx, y_max + row*dy, r, mode=args.mode)
+            d = get_path_segments(x_min + col*dx, y_min + row*dy, x_max + col*dx, y_max + row*dy, r, mode=args.mode, start_at=args.start)
             # Find the path with Path{i} and update its 'd' attribute
             pattern = rf'(<path\s+id="Path{i}"\s+d=")[^"]+(")'
             svg_content = re.sub(pattern, rf'\1{d}\2', svg_content)
