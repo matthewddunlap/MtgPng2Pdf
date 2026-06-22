@@ -138,13 +138,41 @@ def main():
     x_max, y_max = 292.80, 259.20
     r, dx, dy = 8.20, 314.16 - 43.44, 275.04 - 80.64
 
+    # Collect all paths first
+    path_definitions = {}
+    # Mapping: row, col -> ID
+    # Row 0 (Top): ID 5, 4
+    # Row 1 (Mid): ID 3, 2
+    # Row 2 (Bottom): ID 1, 0
+    
+    # Alternatively, just use i = row * 2 + col and then target_id = 5 - i
     for row in range(3):
         for col in range(2):
             i = row * 2 + col
+            target_id = 5 - i
             d = get_path_segments(x_min + col*dx, y_min + row*dy, x_max + col*dx, y_max + row*dy, r, mode=args.mode, start_at=args.start)
-            # Find the path with Path{i} and update its 'd' attribute
-            pattern = rf'(<path\s+id="Path{i}"\s+d=")[^"]+(")'
-            svg_content = re.sub(pattern, rf'\1{d}\2', svg_content)
+            path_definitions[target_id] = d
+
+    # Remove all existing Path tags from svg_content
+    # Using re.DOTALL to match multiline tags correctly
+    svg_content = re.sub(r'\s*<path\s+id="Path\d+"[^>]+/>', '', svg_content, flags=re.DOTALL)
+    
+    # Find the insertion point: before the final </svg> tag
+    insertion_match = re.search(r'</svg>', svg_content)
+    if not insertion_match:
+        print("Error: Could not find </svg> tag.")
+        sys.exit(1)
+    
+    insertion_point = insertion_match.start()
+    
+    # Build new path tags in order (0 to 5)
+    # Since they are 0-5 in XML, the cutter starts at Path 0 (Bottom Right)
+    new_paths_xml = ""
+    for i in range(6):
+        d = path_definitions[i]
+        new_paths_xml += f'\n  <path id="Path{i}" d="{d}" style="fill:none;fill-opacity:0;stroke:#ff0000;stroke-linecap:round;stroke-linejoin:round;stroke-opacity:1" />'
+
+    svg_content = svg_content[:insertion_point] + new_paths_xml + "\n" + svg_content[insertion_point:]
 
     # Clean up styles and notes
     svg_content = svg_content.replace('stroke-dasharray:298,1;stroke-dashoffset:0;', '')
