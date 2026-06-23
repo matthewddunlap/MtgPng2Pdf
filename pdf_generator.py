@@ -17,6 +17,79 @@ from config import LAYOUTS_DATA, CameoPaperSize, CameoCardSize, TARGET_IMG_WIDTH
 from image_handler import ImageSource
 from parsing_utils import parse_dimension_to_pixels
 
+def draw_card_layout_cameo_slots(
+    card_images: List[Image.Image],
+    base_image: Image.Image,
+    slots: List[dict],
+    print_bleed_layout_units: int,
+    crop_percentage: float,
+    ppi_ratio: float,
+    extend_corners_src_px: int,
+    flip: bool,
+    cell_bg_color_pil,
+    global_offset: Tuple[float, float] = (0.0, 0.0),
+    slot_offsets: dict = None,
+):
+    mm_to_px_scaled = (300.0 * ppi_ratio) / 25.4
+    if slot_offsets is None:
+        slot_offsets = {}
+
+    for i, original_card_pil_image in enumerate(card_images):
+        if i >= len(slots):
+            break
+        slot = slots[i]
+        slot_w = slot["width"]
+        slot_h = slot["height"]
+        current_card_image = original_card_pil_image
+
+        # Auto-rotate if image orientation doesn't match slot orientation
+        slot_is_landscape = slot_w > slot_h
+        image_is_landscape = current_card_image.width > current_card_image.height
+        if slot_is_landscape != image_is_landscape:
+            current_card_image = current_card_image.transpose(Image.ROTATE_90)
+
+        # Base position (scaled)
+        slot_x = math.floor(slot["x"] * ppi_ratio)
+        slot_y = math.floor(slot["y"] * ppi_ratio)
+
+        # Apply mm offsets
+        dx_mm, dy_mm = global_offset
+        if i in slot_offsets:
+            sdx, sdy = slot_offsets[i]
+            dx_mm += sdx
+            dy_mm += sdy
+        slot_x += round(dx_mm * mm_to_px_scaled)
+        slot_y += round(dy_mm * mm_to_px_scaled)
+
+        card_render_width  = math.floor(slot_w * ppi_ratio)
+        card_render_height = math.floor(slot_h * ppi_ratio)
+
+        if crop_percentage > 0:
+            cw, ch = current_card_image.size
+            cpx = math.floor(cw / 2 * (crop_percentage / 100.0))
+            cpy = math.floor(ch / 2 * (crop_percentage / 100.0))
+            current_card_image = current_card_image.crop((cpx, cpy, cw - cpx, ch - cpy))
+
+        extend_corners_page_px_scaled = math.floor(extend_corners_src_px * ppi_ratio)
+        if extend_corners_src_px > 0:
+            current_card_image = current_card_image.crop((
+                extend_corners_src_px, extend_corners_src_px,
+                current_card_image.width  - extend_corners_src_px,
+                current_card_image.height - extend_corners_src_px,
+            ))
+
+        paste_box = (
+            slot_x + extend_corners_page_px_scaled,
+            slot_y + extend_corners_page_px_scaled,
+            card_render_width  - 2 * extend_corners_page_px_scaled,
+            card_render_height - 2 * extend_corners_page_px_scaled,
+        )
+        final_bleed = math.ceil(print_bleed_layout_units * ppi_ratio) + extend_corners_page_px_scaled
+        draw_card_with_border_cameo(current_card_image, base_image, paste_box, final_bleed, cell_bg_color_pil)
+
+def calculate_max_print_bleed_cameo_slots(slots: List[dict]) -> int:
+    return 12
+
 def calculate_max_print_bleed_cameo(x_pos: List[int], y_pos: List[int], width: int, height: int) -> int:
     if len(x_pos) == 1 and len(y_pos) == 1: return 0
     x_border_max = 100000
@@ -128,7 +201,7 @@ def generate_alignment_pattern(width_px: int, height_px: int, dpi: int, offset: 
         
     return img
 
-def create_pdf_cameo_style(image_sources: List[ImageSource], output_path_or_buffer: Union[str, io.BytesIO], paper_type_arg: str, target_dpi: int, image_cell_bg_color_str: str, pdf_name_label: Optional[str], label_font_size_base: int, pdf_quality: int, debug: bool = False, orientation: str = "landscape", alignment_sheet: bool = False, global_offset: Tuple[float, float] = (0.0, 0.0), slot_offsets: dict[int, Tuple[float, float]] = None):
+def create_pdf_cameo_style(image_sources: List[ImageSource], output_path_or_buffer: Union[str, io.BytesIO], paper_type_arg: str, target_dpi: int, image_cell_bg_color_str: str, pdf_name_label: Optional[str], label_font_size_base: int, pdf_quality: int, debug: bool = False, orientation: str = "landscape", alignment_sheet: bool = False, global_offset: Tuple[float, float] = (0.0, 0.0), slot_offsets: dict[int, Tuple[float, float]] = None, cameo_paper_key_override: Optional[str] = None):
     print(f"\n--- Cameo PDF Generation (PIL-based) ---")
     if alignment_sheet: print("  Alignment Sheet Mode Enabled")
     if global_offset != (0.0, 0.0): print(f"  Global Offset: {global_offset[0]}mm, {global_offset[1]}mm")
@@ -139,9 +212,12 @@ def create_pdf_cameo_style(image_sources: List[ImageSource], output_path_or_buff
     default_cell_bg_color = "black"
     if image_cell_bg_color_str.lower() != default_cell_bg_color: print(f"  Image Cell Background Color: {image_cell_bg_color_str}")
     
-    cameo_paper_key = paper_type_arg.lower()
-    if cameo_paper_key == "letter" and orientation == "portrait":
-        cameo_paper_key = CameoPaperSize.LETTER_PORTRAIT
+    if cameo_paper_key_override:
+        cameo_paper_key = cameo_paper_key_override
+    else:
+        cameo_paper_key = paper_type_arg.lower()
+        if cameo_paper_key == "letter" and orientation == "portrait":
+            cameo_paper_key = CameoPaperSize.LETTER_PORTRAIT
     
     if cameo_paper_key not in LAYOUTS_DATA["paper_layouts"]:
         print(f"Error: --cameo PDF generation: Paper type '{paper_type_arg}' with orientation '{orientation}' (key: {cameo_paper_key}) is not directly supported by embedded cameo layouts."); return
@@ -149,13 +225,29 @@ def create_pdf_cameo_style(image_sources: List[ImageSource], output_path_or_buff
     cameo_card_key = CameoCardSize.STANDARD
     try: paper_layout_config = LAYOUTS_DATA["paper_layouts"][cameo_paper_key]; card_layout_config = paper_layout_config["card_layouts"][cameo_card_key]
     except KeyError: print(f"Error: Layout for paper '{cameo_paper_key}' and card size '{cameo_card_key}' not found."); return
-    num_rows = len(card_layout_config["y_pos"]); num_cols = len(card_layout_config["x_pos"]); num_cards_per_page = num_rows * num_cols
+
+    is_slot_layout = "slots" in card_layout_config
+
+    if is_slot_layout:
+        slots_config = card_layout_config["slots"]
+        num_cards_per_page = len(slots_config)
+        card_slot_width_layout  = slots_config[0]["width"]
+        card_slot_height_layout = slots_config[0]["height"]
+        max_print_bleed_layout_units = calculate_max_print_bleed_cameo_slots(slots_config)
+        num_rows = num_cols = None
+    else:
+        num_rows = len(card_layout_config["y_pos"])
+        num_cols = len(card_layout_config["x_pos"])
+        num_cards_per_page = num_rows * num_cols
+        card_slot_width_layout = card_layout_config["width"]
+        card_slot_height_layout = card_layout_config["height"]
+        max_print_bleed_layout_units = calculate_max_print_bleed_cameo(card_layout_config["x_pos"], card_layout_config["y_pos"], card_slot_width_layout, card_slot_height_layout)
+
     layout_base_ppi = 300.0; ppi_ratio = target_dpi / layout_base_ppi
     page_width_px_scaled = math.floor(paper_layout_config["width"] * ppi_ratio); page_height_px_scaled = math.floor(paper_layout_config["height"] * ppi_ratio)
-    card_slot_width_layout = card_layout_config["width"]; card_slot_height_layout = card_layout_config["height"]
     crop_percentage_on_source = 0.0; extend_corners_on_source_px = 0
-    max_print_bleed_layout_units = calculate_max_print_bleed_cameo(card_layout_config["x_pos"], card_layout_config["y_pos"], card_slot_width_layout, card_slot_height_layout)
-    if debug: print(f"DEBUG CAMEO: Paper Key: {cameo_paper_key}, Card Key: {cameo_card_key}"); print(f"DEBUG CAMEO: Grid: {num_cols}x{num_rows} ({num_cards_per_page} cards/page)")
+
+    if debug: print(f"DEBUG CAMEO: Paper Key: {cameo_paper_key}, Card Key: {cameo_card_key}"); print(f"DEBUG CAMEO: Slots configuration active: {is_slot_layout}, capacity={num_cards_per_page}")
     script_dir = os.path.dirname(os.path.abspath(__file__)); asset_dir_cameo = os.path.join(script_dir, "assets"); registration_filename = f'{cameo_paper_key}_registration.jpg'; registration_path = os.path.join(asset_dir_cameo, registration_filename)
     master_page_background: Optional[Image.Image] = None
     if os.path.exists(registration_path):
@@ -174,16 +266,21 @@ def create_pdf_cameo_style(image_sources: List[ImageSource], output_path_or_buff
         pil_card_images_for_page: List[Image.Image] = []
         for slot_idx, img_source in enumerate(image_sources_for_this_page):
             if alignment_sheet:
-                # Calculate total offset for this specific slot
                 gdx, gdy = global_offset
-                sdx, sdy = slot_offsets.get(slot_idx, (0.0, 0.0))
+                sdx, sdy = slot_offsets.get(slot_idx, (0.0, 0.0)) if slot_offsets else (0.0, 0.0)
                 total_offset = (gdx + sdx, gdy + sdy)
                 
                 print(f"  Slot {slot_idx + 1} Offset: X={total_offset[0]:+.2f}mm, Y={total_offset[1]:+.2f}mm")
                 
+                if is_slot_layout:
+                    w = math.floor(slots_config[slot_idx]["width"]  * ppi_ratio)
+                    h = math.floor(slots_config[slot_idx]["height"] * ppi_ratio)
+                else:
+                    w = math.floor(card_slot_width_layout  * ppi_ratio)
+                    h = math.floor(card_slot_height_layout * ppi_ratio)
+
                 pil_card_images_for_page.append(generate_alignment_pattern(
-                    math.floor(card_slot_width_layout * ppi_ratio),
-                    math.floor(card_slot_height_layout * ppi_ratio),
+                    w, h,
                     target_dpi,
                     offset=total_offset,
                     slot_num=slot_idx + 1
@@ -195,12 +292,22 @@ def create_pdf_cameo_style(image_sources: List[ImageSource], output_path_or_buff
                 else: raise Exception("Failed to get local path")
             except Exception as e:
                 print(f"  Warning: Could not process image '{img_source.original}': {e}")
-                placeholder_w = int(TARGET_IMG_WIDTH_INCHES * target_dpi); placeholder_h = int(TARGET_IMG_HEIGHT_INCHES * target_dpi)
+                if is_slot_layout:
+                    placeholder_w = math.floor(slots_config[slot_idx]["width"] * ppi_ratio)
+                    placeholder_h = math.floor(slots_config[slot_idx]["height"] * ppi_ratio)
+                else:
+                    placeholder_w = int(TARGET_IMG_WIDTH_INCHES * target_dpi)
+                    placeholder_h = int(TARGET_IMG_HEIGHT_INCHES * target_dpi)
                 placeholder = Image.new("RGBA", (placeholder_w, placeholder_h), (255, 192, 203, 255)); draw_placeholder = ImageDraw.Draw(placeholder)
                 try: font_placeholder = ImageFont.load_default(); draw_placeholder.text((5,5), "Error\nLoading", fill="black", font=font_placeholder)
                 except: draw_placeholder.text((5,5), "Error", fill="black")
                 pil_card_images_for_page.append(placeholder)
-        draw_card_layout_cameo(card_images=pil_card_images_for_page, base_image=current_page_pil_image, num_rows=num_rows, num_cols=num_cols, x_pos_layout=card_layout_config["x_pos"], y_pos_layout=card_layout_config["y_pos"], card_width_layout=card_slot_width_layout, card_height_layout=card_slot_height_layout, print_bleed_layout_units=max_print_bleed_layout_units, crop_percentage=crop_percentage_on_source, ppi_ratio=ppi_ratio, extend_corners_src_px=extend_corners_on_source_px, flip=False, cell_bg_color_pil=pil_cell_bg_color, global_offset=global_offset, slot_offsets=slot_offsets)
+        
+        if is_slot_layout:
+            draw_card_layout_cameo_slots(card_images=pil_card_images_for_page, base_image=current_page_pil_image, slots=slots_config, print_bleed_layout_units=max_print_bleed_layout_units, crop_percentage=crop_percentage_on_source, ppi_ratio=ppi_ratio, extend_corners_src_px=extend_corners_on_source_px, flip=False, cell_bg_color_pil=pil_cell_bg_color, global_offset=global_offset, slot_offsets=slot_offsets)
+        else:
+            draw_card_layout_cameo(card_images=pil_card_images_for_page, base_image=current_page_pil_image, num_rows=num_rows, num_cols=num_cols, x_pos_layout=card_layout_config["x_pos"], y_pos_layout=card_layout_config["y_pos"], card_width_layout=card_slot_width_layout, card_height_layout=card_slot_height_layout, print_bleed_layout_units=max_print_bleed_layout_units, crop_percentage=crop_percentage_on_source, ppi_ratio=ppi_ratio, extend_corners_src_px=extend_corners_on_source_px, flip=False, cell_bg_color_pil=pil_cell_bg_color, global_offset=global_offset, slot_offsets=slot_offsets)
+        
         page_num_for_label = (page_start_index // num_cards_per_page) + 1; template_name = card_layout_config.get("template", "unknown_template")
         base_label_part = f"template: {template_name}, sheet: {page_num_for_label}"
         if pdf_name_label: label_text = f"name: {pdf_name_label}, {base_label_part}"

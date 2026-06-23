@@ -17,6 +17,13 @@ from manifest_generator import generate_deck_manifest_image
 from web_utils import check_server_file_exists, upload_file_to_server, cleanup_temp_files
 from token_set_manager import load_token_sets, update_token_sets_from_api
 
+def resolve_cameo_paper_key(paper_type: str, orientation: str, layout: str) -> str:
+    if paper_type == "letter" and orientation == "portrait":
+        if layout == "8card":
+            return "letter_portrait_8card"
+        return "letter_portrait"
+    return paper_type
+
 def main():
     parser = argparse.ArgumentParser(
         description="Lay out PNG images or copy them based on a deck list.",
@@ -33,35 +40,29 @@ def main():
     mode_group.add_argument("--output-format", type=str, default="pdf", choices=["pdf", "png"], help="Format for grid layout output (pdf or png). Ignored if --png-out-dir is used.")
     mode_group.add_argument("--png-out-dir", type=str, default=None, help="Output directory for copying PNGs from deck list. If set, grid generation is skipped.")
     
-    # --- MODIFIED: Renamed to be more generic ---
     server_group = parser.add_argument_group('Image Server Options')
-    # --- MODIFIED: Help text updated, dual purpose explained ---
     server_group.add_argument(
         "--image-server-base-url", type=str, default=None,
         help="Base URL of the image server. If provided, images will be fetched from this server instead of --png-dir. "
              "If --upload-to-server is used, output files will be PUT to this server instead of being saved locally. "
              "Required if --upload-to-server is set."
     )
-    # --- MODIFIED: Default and help text updated ---
     server_group.add_argument(
         "--image-server-path-prefix", type=str, default="/local_art",
         help="Base path for the art URL. Used for both PNG card image retrieval and, if --upload-to-server is used, "
              "constructing the output file path for the PDF."
     )
-    # --- NEW ---
     server_group.add_argument(
         "--image-server-png-dir", type=str, default="/",
         help="Relative path (from --image-server-path-prefix) to the directory containing the source PNG files."
     )
     
-    # --- MODIFIED: Renamed to be more generic ---
     server_upload_group = parser.add_argument_group('Image Server Upload Options')
     server_upload_group.add_argument(
         "--upload-to-server", action="store_true",
         help="Upload the generated PDF to the image server instead of saving it locally. "
              "Requires --image-server-base-url."
     )
-    # --- MODIFIED: Renamed from --output-server-path ---
     server_upload_group.add_argument(
         "--image-server-deck-dir", type=str, default="/",
         help="Subdirectory on the server (relative to --image-server-path-prefix) to upload the final PDF or PNG to."
@@ -103,6 +104,11 @@ def main():
     pg_layout_group.add_argument("--cameo-orientation", type=str, default="landscape", choices=["landscape", "portrait"], help="[Cameo Mode Only] Orientation of the page layout.")
     pg_layout_group.add_argument("--cameo-label-font-size", type=int, default=32, help="[Cameo Mode Only] Font size for the page label. This is a base size in points, which is then scaled by DPI. A reasonable range is 24-48. Must be between 8 and 96.")
     pg_layout_group.add_argument("--pdf-quality", type=int, default=75, choices=range(1, 101), metavar="[1-100]", help="[PDF Cameo Mode Only] The quality of the embedded images in the PDF. 100 is the highest quality.")
+    pg_layout_group.add_argument(
+        "--cameo-layout", type=str, default="standard",
+        choices=["standard", "8card"],
+        help="[Cameo Mode Only] Selects standard or 8-card hybrid layout"
+    )
     
     # --- Cameo Calibration Options ---
     cameo_cal_group = parser.add_argument_group('Cameo Calibration Options (apply to --cameo mode)')
@@ -211,8 +217,6 @@ def main():
     png_source_path_on_server = "/"
     if args.image_server_base_url:
         print(f"Using web server: {args.image_server_base_url}")
-        # --- MODIFIED: Construct the full path for fetching PNGs ---
-        # Cleanly join path components, removing extra slashes and handling empty parts.
         png_path_parts = [p.strip('/') for p in [args.image_server_path_prefix, args.image_server_png_dir] if p.strip('/')]
         png_source_path_on_server = '/' + '/'.join(png_path_parts)
     else:
@@ -242,18 +246,21 @@ def main():
             if not args.cameo:
                 print("Error: --alignment-sheet currently only supports --cameo mode."); return
             
-            cameo_paper_key = validated_paper_type
-            if cameo_paper_key == "letter" and args.cameo_orientation == "portrait":
-                cameo_paper_key = "letter_portrait"
+            cameo_paper_key = resolve_cameo_paper_key(
+                validated_paper_type, args.cameo_orientation, args.cameo_layout
+            )
             
             if cameo_paper_key not in LAYOUTS_DATA["paper_layouts"]:
                 print(f"Error: Alignment sheet: Paper type '{args.paper_type}' with orientation '{args.cameo_orientation}' is not supported."); return
             
             layout_config = LAYOUTS_DATA["paper_layouts"][cameo_paper_key]
             card_layout = layout_config.get("card_layouts", {}).get("standard", {})
-            num_cols = len(card_layout.get("x_pos", []))
-            num_rows = len(card_layout.get("y_pos", []))
-            cards_per_page = num_cols * num_rows
+            if "slots" in card_layout:
+                cards_per_page = len(card_layout["slots"])
+            else:
+                num_cols = len(card_layout.get("x_pos", []))
+                num_rows = len(card_layout.get("y_pos", []))
+                cards_per_page = num_cols * num_rows
             
             # Fill exactly one page with alignment patterns
             image_sources_to_process = [ImageSource("ALIGNMENT_PATTERN")] * cards_per_page
@@ -327,14 +334,17 @@ def main():
             # --- Handle Extra Cards ---
             if args.extra_card and not args.png_out_dir:
                 if args.cameo:
-                    cameo_paper_key = validated_paper_type
-                    if cameo_paper_key == "letter" and args.cameo_orientation == "portrait":
-                        cameo_paper_key = "letter_portrait"
+                    cameo_paper_key = resolve_cameo_paper_key(
+                        validated_paper_type, args.cameo_orientation, args.cameo_layout
+                    )
                     layout_config = LAYOUTS_DATA["paper_layouts"].get(cameo_paper_key, {})
                     card_layout = layout_config.get("card_layouts", {}).get("standard", {})
-                    num_cols = len(card_layout.get("x_pos", []))
-                    num_rows = len(card_layout.get("y_pos", []))
-                    cards_per_page = num_cols * num_rows
+                    if "slots" in card_layout:
+                        cards_per_page = len(card_layout["slots"])
+                    else:
+                        num_cols = len(card_layout.get("x_pos", []))
+                        num_rows = len(card_layout.get("y_pos", []))
+                        cards_per_page = num_cols * num_rows
                 else:
                     cards_per_page = 9 if validated_paper_type == "letter" else 12
                 
@@ -363,14 +373,17 @@ def main():
             # --- Handle Extra Deck Manifests ---
             if args.extra_deck_manifest and not args.png_out_dir:
                 if args.cameo:
-                    cameo_paper_key = validated_paper_type
-                    if cameo_paper_key == "letter" and args.cameo_orientation == "portrait":
-                        cameo_paper_key = "letter_portrait"
+                    cameo_paper_key = resolve_cameo_paper_key(
+                        validated_paper_type, args.cameo_orientation, args.cameo_layout
+                    )
                     layout_config = LAYOUTS_DATA["paper_layouts"].get(cameo_paper_key, {})
                     card_layout = layout_config.get("card_layouts", {}).get("standard", {})
-                    num_cols = len(card_layout.get("x_pos", []))
-                    num_rows = len(card_layout.get("y_pos", []))
-                    cards_per_page = num_cols * num_rows
+                    if "slots" in card_layout:
+                        cards_per_page = len(card_layout["slots"])
+                    else:
+                        num_cols = len(card_layout.get("x_pos", []))
+                        num_rows = len(card_layout.get("y_pos", []))
+                        cards_per_page = num_cols * num_rows
                 else:
                     cards_per_page = 9 if validated_paper_type == "letter" else 12
 
@@ -408,7 +421,6 @@ def main():
                                 image_sources_to_process.append(manifest_source)
                                 extra_manifests_processed += 1
                                 
-                                # Format the name for display (matching manifest_generator logic)
                                 formatted_name = extra_deck_name.replace('-', ' ').replace('_', ' ')
                                 display_title = " ".join([word.capitalize() for word in formatted_name.split()])
                                 
@@ -471,7 +483,6 @@ def main():
                     output_target = f"{base_output_filename_final}.pdf"
                 
                 if args.cameo:
-                    # Parse slot offsets: "SLOT_NUM:DX:DY" -> {0: (dx, dy)}
                     slot_offsets = {}
                     if args.cameo_slot_offset:
                         for offset_str in args.cameo_slot_offset:
@@ -499,19 +510,18 @@ def main():
                         orientation=args.cameo_orientation,
                         alignment_sheet=args.alignment_sheet,
                         global_offset=tuple(args.cameo_global_offset) if args.cameo_global_offset else (0.0, 0.0),
-                        slot_offsets=slot_offsets
+                        slot_offsets=slot_offsets,
+                        cameo_paper_key_override=resolve_cameo_paper_key(
+                            validated_paper_type, args.cameo_orientation, args.cameo_layout
+                        )
                     )
                 else:
                     create_pdf_grid(image_sources=image_sources_to_process, output_path_or_buffer=output_target, paper_type_str=validated_paper_type, image_spacing_pixels=args.image_spacing_pixels, dpi=args.dpi, page_margin_str=args.page_margin, page_background_color_str=args.page_bg_color, image_cell_background_color_str=args.image_cell_bg_color, cut_lines=args.cut_lines, cut_line_length_str=args.cut_line_length, cut_line_color_str=args.cut_line_color, cut_line_width_pt=args.cut_line_width_pt, debug=args.debug)
                 
                 if args.upload_to_server and pdf_buffer:
                     print("\n--- Uploading PDF to Server ---")
-                    # --- MODIFIED: Construct the full upload URL ---
-                    # Join the base prefix, the relative PDF directory, and the filename.
                     pdf_path_parts = [p.strip('/') for p in [args.image_server_path_prefix, args.image_server_deck_dir, output_pdf_filename] if p.strip('/')]
                     full_path_for_upload = '/' + '/'.join(pdf_path_parts)
-                    
-                    # Combine the base URL with the full path.
                     upload_url = f"{args.image_server_base_url.rstrip('/')}{full_path_for_upload}"
 
                     if not args.overwrite_server_file:
@@ -525,7 +535,6 @@ def main():
 
             elif args.output_format == "png":
                 if args.upload_to_server:
-                    # We will generate multiple pages in memory and upload them sequentially
                     base_output_filename = os.path.basename(base_output_filename_final)
                     create_png_output(
                         image_sources=image_sources_to_process,
@@ -576,3 +585,6 @@ def main():
         cleanup_temp_files()
         for img_source in image_sources_to_process:
             img_source.cleanup()
+
+if __name__ == "__main__":
+    main()

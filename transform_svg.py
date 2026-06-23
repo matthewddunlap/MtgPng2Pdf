@@ -34,15 +34,6 @@ def get_path_segments(x_min, y_min, x_max, y_max, r, mode='all', start_at=None, 
         start_at = 'radii' if mode == 'radii' else 'edge'
 
     # We generate 16 potential segments
-    # S0, S1 (Top Edge)
-    # S2, S3 (TR Corner)
-    # S4, S5 (Right Edge)
-    # S6, S7 (BR Corner)
-    # S8, S9 (Bottom Edge)
-    # S10, S11 (BL Corner)
-    # S12, S13 (Left Edge)
-    # S14, S15 (TL Corner)
-    
     def get_edge_parts(x1, y1, x2, y2, is_broken):
         cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
         if is_broken:
@@ -53,7 +44,6 @@ def get_path_segments(x_min, y_min, x_max, y_max, r, mode='all', start_at=None, 
                 return [f"M {x1:.2f},{y1:.2f} L {cx - half_gap:.2f},{y1:.2f}",
                         f"M {cx + half_gap:.2f},{y1:.2f} L {x2:.2f},{y1:.2f}"]
         else:
-            # Still split at center for rotation logic, but no gap
             if x1 == x2:
                 return [f"M {x1:.2f},{y1:.2f} L {x1:.2f},{cy:.2f}",
                         f"M {x1:.2f},{cy:.2f} L {x1:.2f},{y2:.2f}"]
@@ -66,7 +56,6 @@ def get_path_segments(x_min, y_min, x_max, y_max, r, mode='all', start_at=None, 
             s1, s2 = make_broken_bezier(p0, p1, p2, p3, r, gap)
             return [s1, s2]
         else:
-            # Split at t=0.5 for rotation logic
             b1, b2 = split_bezier(p0, p1, p2, p3, 0.5)
             return [f"M {b1[0][0]:.2f},{b1[0][1]:.2f} C {b1[1][0]:.2f},{b1[1][1]:.2f} {b1[2][0]:.2f},{b1[2][1]:.2f} {b1[3][0]:.2f},{b1[3][1]:.2f}",
                     f"M {b2[0][0]:.2f},{b2[0][1]:.2f} C {b2[1][0]:.2f},{b2[1][1]:.2f} {b2[2][0]:.2f},{b2[2][1]:.2f} {b2[3][0]:.2f},{b2[3][1]:.2f}"]
@@ -75,21 +64,7 @@ def get_path_segments(x_min, y_min, x_max, y_max, r, mode='all', start_at=None, 
     break_radii = mode in ['all', 'radii']
 
     all_parts = []
-    # 0,1: Top Edge (split at center) -> We need to handle the loop correctly.
-    # Let's define the points from Top Mid clockwise.
-    # Parts:
-    # TopRightHalf, TR1, TR2, RightTopHalf, RightBottomHalf, BR1, BR2, BottomRightHalf, BottomLeftHalf, BL1, BL2, LeftBottomHalf, LeftTopHalf, TL1, TL2, TopLeftHalf
     
-    # 1. Top Edge
-    top_parts = get_edge_parts(center_x, top_y, x_max - r, top_y, False) # We don't break the half-edges themselves
-    # Wait, the 16 segments logic:
-    # S0: M_Top to End_Top (TopRightHalf)
-    # S1: End_Top to M_TR (TR_Part1)
-    # S2: M_TR to Start_Right (TR_Part2)
-    # S3: Start_Right to M_Right (RightTopHalf)
-    # ...
-    
-    # Let's build them in order
     s0 = f"M {center_x + (half_gap if break_edges else 0):.2f},{top_y:.2f} L {x_max - r:.2f},{top_y:.2f}"
     s1, s2 = get_corner_parts((x_max - r, y_min), (x_max - r + k, y_min), (x_max, y_min + r - k), (x_max, y_min + r), break_radii)
     s3 = f"M {x_max:.2f},{y_min + r:.2f} L {x_max:.2f},{center_y - (half_gap if break_edges else 0):.2f}"
@@ -109,7 +84,6 @@ def get_path_segments(x_min, y_min, x_max, y_max, r, mode='all', start_at=None, 
     parts = [s0, s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11, s12, s13, s14, s15]
     
     if start_at == 'radii':
-        # Start at s2 (after TR gap)
         parts = parts[2:] + parts[:2]
     
     return " ".join(parts)
@@ -120,12 +94,14 @@ def main():
     parser.add_argument('--template', default='inkscape_3x2_portrait_v1.0_uniform.svg', help='Uniform SVG template.')
     parser.add_argument('--output', help='Output SVG filename.')
     parser.add_argument('--start', choices=['edge', 'radii'], help='Where to start the cut.')
+    parser.add_argument('--layout', choices=['3x2', '8card'], default='3x2', help='Card layout structure to output SVG cut lines.')
     args = parser.parse_args()
 
     output_file = args.output
     if not output_file:
         suffix = f"_{args.mode}" if args.mode != 'edges' else ""
-        output_file = args.template.replace('_uniform.svg', f'_tabs{suffix}.svg')
+        layout_tag = "_8card" if args.layout == '8card' else ""
+        output_file = args.template.replace('_uniform.svg', f'{layout_tag}_tabs{suffix}.svg')
 
     try:
         with open(args.template, 'r') as f:
@@ -134,45 +110,73 @@ def main():
         print(f"Error: Template {args.template} not found.")
         sys.exit(1)
 
-    x_min, y_min = 43.44, 80.64
-    x_max, y_max = 292.80, 259.20
-    r, dx, dy = 8.20, 314.16 - 43.44, 275.04 - 80.64
+    if args.layout == '8card':
+        px_to_mm = 25.4 / 300.0
+        slots_px = [
+            (137,  136,  742,  1036),
+            (904,  136,  742,  1036),
+            (1671, 136,  742,  1036),
+            (137,  1197, 742,  1036),
+            (904,  1197, 742,  1036),
+            (1671, 1197, 742,  1036),
+            (260,  2258, 1036, 742), # Shifted right to clear bottom-left registration mark
+            (1321, 2258, 1036, 742), # Shifted right to clear bottom-left registration mark
+        ]
+        slot_boxes = [
+            (x * px_to_mm, y * px_to_mm, (x + w) * px_to_mm, (y + h) * px_to_mm)
+            for x, y, w, h in slots_px
+        ]
+        path_definitions = {}
+        for i, (x_min_val, y_min_val, x_max_val, y_max_val) in enumerate(slot_boxes):
+            path_definitions[i] = get_path_segments(
+                x_min_val, y_min_val, x_max_val, y_max_val, r=8.20,
+                mode=args.mode, start_at=args.start
+            )
 
-    # Collect all paths first
-    path_definitions = {}
-    # Mapping: row, col -> ID
-    # Row 0 (Top): ID 5, 4
-    # Row 1 (Mid): ID 3, 2
-    # Row 2 (Bottom): ID 1, 0
-    
-    # Alternatively, just use i = row * 2 + col and then target_id = 5 - i
-    for row in range(3):
-        for col in range(2):
-            i = row * 2 + col
-            target_id = 5 - i
-            d = get_path_segments(x_min + col*dx, y_min + row*dy, x_max + col*dx, y_max + row*dy, r, mode=args.mode, start_at=args.start)
-            path_definitions[target_id] = d
+        svg_content = re.sub(r'\s*<path\s+id="Path\d+"[^>]+/>', '', svg_content, flags=re.DOTALL)
+        insertion_match = re.search(r'</svg>', svg_content)
+        if not insertion_match:
+            print("Error: Could not find </svg> tag.")
+            sys.exit(1)
+        insertion_point = insertion_match.start()
+        new_paths_xml = ""
+        for i in range(8):
+            d = path_definitions[i]
+            new_paths_xml += f'\n  <path id="Path{i}" d="{d}" style="fill:none;fill-opacity:0;stroke:#ff0000;stroke-linecap:round;stroke-linejoin:round;stroke-opacity:1" />'
+        svg_content = svg_content[:insertion_point] + new_paths_xml + "\n" + svg_content[insertion_point:]
 
-    # Remove all existing Path tags from svg_content
-    # Using re.DOTALL to match multiline tags correctly
-    svg_content = re.sub(r'\s*<path\s+id="Path\d+"[^>]+/>', '', svg_content, flags=re.DOTALL)
-    
-    # Find the insertion point: before the final </svg> tag
-    insertion_match = re.search(r'</svg>', svg_content)
-    if not insertion_match:
-        print("Error: Could not find </svg> tag.")
-        sys.exit(1)
-    
-    insertion_point = insertion_match.start()
-    
-    # Build new path tags in order (0 to 5)
-    # Since they are 0-5 in XML, the cutter starts at Path 0 (Bottom Right)
-    new_paths_xml = ""
-    for i in range(6):
-        d = path_definitions[i]
-        new_paths_xml += f'\n  <path id="Path{i}" d="{d}" style="fill:none;fill-opacity:0;stroke:#ff0000;stroke-linecap:round;stroke-linejoin:round;stroke-opacity:1" />'
+    else:
+        x_min, y_min = 43.44, 80.64
+        x_max, y_max = 292.80, 259.20
+        r, dx, dy = 8.20, 314.16 - 43.44, 275.04 - 80.64
 
-    svg_content = svg_content[:insertion_point] + new_paths_xml + "\n" + svg_content[insertion_point:]
+        # Collect all paths first
+        path_definitions = {}
+        for row in range(3):
+            for col in range(2):
+                i = row * 2 + col
+                target_id = 5 - i
+                d = get_path_segments(x_min + col*dx, y_min + row*dy, x_max + col*dx, y_max + row*dy, r, mode=args.mode, start_at=args.start)
+                path_definitions[target_id] = d
+
+        # Remove all existing Path tags from svg_content
+        svg_content = re.sub(r'\s*<path\s+id="Path\d+"[^>]+/>', '', svg_content, flags=re.DOTALL)
+        
+        # Find the insertion point: before the final </svg> tag
+        insertion_match = re.search(r'</svg>', svg_content)
+        if not insertion_match:
+            print("Error: Could not find </svg> tag.")
+            sys.exit(1)
+        
+        insertion_point = insertion_match.start()
+        
+        # Build new path tags in order (0 to 5)
+        new_paths_xml = ""
+        for i in range(6):
+            d = path_definitions[i]
+            new_paths_xml += f'\n  <path id="Path{i}" d="{d}" style="fill:none;fill-opacity:0;stroke:#ff0000;stroke-linecap:round;stroke-linejoin:round;stroke-opacity:1" />'
+
+        svg_content = svg_content[:insertion_point] + new_paths_xml + "\n" + svg_content[insertion_point:]
 
     # Clean up styles and notes
     svg_content = svg_content.replace('stroke-dasharray:298,1;stroke-dashoffset:0;', '')

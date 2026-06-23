@@ -50,11 +50,28 @@ LAYOUTS_DATA: Dict[str, Any] = {
                 }
             }
         },
-
-
-
-
-
+        "letter_portrait_8card": {
+            "width": 2550,
+            "height": 3300,
+            "card_layouts": {
+                "standard": {
+                    "slots": [
+                        # Row 0 — portrait
+                        {"x": 137, "y": 136,  "width": 742, "height": 1036},
+                        {"x": 904, "y": 136,  "width": 742, "height": 1036},
+                        {"x": 1671,"y": 136,  "width": 742, "height": 1036},
+                        # Row 1 — portrait
+                        {"x": 137, "y": 1197, "width": 742, "height": 1036},
+                        {"x": 904, "y": 1197, "width": 742, "height": 1036},
+                        {"x": 1671,"y": 1197, "width": 742, "height": 1036},
+                        # Row 2 — landscape (shifted right to clear BL registration mark)
+                        {"x": 260, "y": 2258, "width": 1036, "height": 742},
+                        {"x": 1321,"y": 2258, "width": 1036, "height": 742},
+                    ],
+                    "template": "letter_portrait_8card_v1"
+                }
+            }
+        },
         "a4": {
             "width": 3508, "height": 2480,
             "card_layouts": {
@@ -71,6 +88,7 @@ LAYOUTS_DATA: Dict[str, Any] = {
 class CameoPaperSize:
     LETTER = "letter"
     LETTER_PORTRAIT = "letter_portrait"
+    LETTER_PORTRAIT_8CARD = "letter_portrait_8card"
     LETTER_LANDSCAPE = "letter"
     A4 = "a4"
 
